@@ -9,7 +9,7 @@ import (
 	"syscall"
 )
 
-const windowsErrorNoData = syscall.Errno(0xe8)
+const windowsErrorNoData = syscall.Errno(0xe8) // ERROR_NO_DATA (232): The pipe is being closed.
 
 func subscribePassthroughSignals() (*signalTracker, func()) {
 	signals := make(chan os.Signal, 1)
