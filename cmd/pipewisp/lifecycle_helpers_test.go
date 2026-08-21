@@ -7,14 +7,14 @@ import (
 
 func hookOutputCommand(value string) string {
 	if runtime.GOOS == "windows" {
-		return "echo " + windowsQuote(value)
+		return "echo " + value
 	}
 	return "printf %s " + unixQuote(value)
 }
 
 func hookOutputAndErrorCommand(stdout, stderr string) string {
 	if runtime.GOOS == "windows" {
-		return "echo " + windowsQuote(stdout) + " & echo " + windowsQuote(stderr) + " 1>&2"
+		return "echo " + stdout + " & echo " + stderr + " 1>&2"
 	}
 	return "printf %s " + unixQuote(stdout) + "; printf %s " + unixQuote(stderr) + " >&2"
 }
@@ -28,8 +28,4 @@ func failingHookCommand(output string) string {
 
 func unixQuote(value string) string {
 	return "'" + strings.ReplaceAll(value, "'", "'\\''") + "'"
-}
-
-func windowsQuote(value string) string {
-	return `"` + strings.ReplaceAll(value, `"`, `\"`) + `"`
 }
