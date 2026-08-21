@@ -10,6 +10,11 @@ type completion struct {
 	signal  os.Signal
 }
 
+type signalTracker struct {
+	signals <-chan os.Signal
+	first   os.Signal
+}
+
 type completionKind uint8
 
 const (
@@ -20,17 +25,35 @@ const (
 )
 
 func selectCompletion(copyDone <-chan error, signals <-chan os.Signal) completion {
-	select {
-	case sig := <-signals:
-		return completion{signal: sig}
-	case err := <-copyDone:
-		// Prefer a signal that is already observable when copy completes.
+	return (&signalTracker{signals: signals}).waitForCopy(copyDone)
+}
+
+func (tracker *signalTracker) poll() os.Signal {
+	for {
 		select {
-		case sig := <-signals:
-			return completion{signal: sig}
+		case sig := <-tracker.signals:
+			if tracker.first == nil && sig != nil {
+				tracker.first = sig
+			}
 		default:
-			return completion{copyErr: err}
+			return tracker.first
 		}
+	}
+}
+
+func (tracker *signalTracker) waitForCopy(copyDone <-chan error) completion {
+	if tracker.poll() != nil {
+		return completion{signal: tracker.first}
+	}
+	select {
+	case sig := <-tracker.signals:
+		if tracker.first == nil && sig != nil {
+			tracker.first = sig
+		}
+		return completion{signal: tracker.first}
+	case err := <-copyDone:
+		tracker.poll()
+		return completion{copyErr: err, signal: tracker.first}
 	}
 }
 
@@ -48,22 +71,37 @@ func classifyCompletion(done completion) completionKind {
 }
 
 func finishCompletion(done completion, runOff func() error, diagnostics io.Writer) int {
+	return finishCompletionWithTracker(done, runOff, diagnostics, nil)
+}
+
+func finishCompletionWithTracker(done completion, runOff func() error, diagnostics io.Writer, tracker *signalTracker) int {
+	if tracker != nil {
+		if sig := tracker.poll(); sig != nil {
+			done.signal = sig
+		}
+	}
+
 	kind := classifyCompletion(done)
-	status := 0
+	var offErr error
 	switch kind {
 	case completionCopyError:
 		reportDiagnostic(diagnostics, done.copyErr)
-		status = 1
-	case completionSignal:
-		status = signalExitCode(done.signal)
 	}
 
 	if runOff != nil {
-		if err := runOff(); err != nil {
-			if kind != completionSignal {
-				status = 1
-			}
+		offErr = runOff()
+	}
+
+	if tracker != nil {
+		if sig := tracker.poll(); sig != nil {
+			done.signal = sig
 		}
 	}
-	return status
+	if classifyCompletion(done) == completionSignal {
+		return signalExitCode(done.signal)
+	}
+	if offErr != nil || kind == completionCopyError {
+		return 1
+	}
+	return 0
 }

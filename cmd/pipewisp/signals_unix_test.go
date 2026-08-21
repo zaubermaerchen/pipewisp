@@ -110,6 +110,155 @@ func TestSubprocessSignalStatusWinsOffFailure(t *testing.T) {
 	}
 }
 
+func TestSubprocessSignalDuringOnSkipsCopy(t *testing.T) {
+	tests := []struct {
+		name   string
+		signal os.Signal
+		status int
+	}{
+		{name: "interrupt", signal: os.Interrupt, status: 130},
+		{name: "terminate", signal: syscall.SIGTERM, status: 143},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			binary := buildPipewispBinary(t)
+			directory := t.TempDir()
+			ready := filepath.Join(directory, "on.started")
+			done := filepath.Join(directory, "on.done")
+			offMarker := filepath.Join(directory, "off.marker")
+			onCommand := "printf started > " + unixQuote(ready) + "; sleep 1; printf done > " + unixQuote(done)
+			offCommand := "printf x >> " + unixQuote(offMarker)
+
+			cmd := exec.Command(binary, "--on", onCommand, "--off", offCommand)
+			var stdout, stderr bytes.Buffer
+			cmd.Stdout = &stdout
+			cmd.Stderr = &stderr
+			if err := cmd.Start(); err != nil {
+				t.Fatalf("Start() error = %v", err)
+			}
+
+			waitForMarker(t, ready)
+			if err := cmd.Process.Signal(tt.signal); err != nil {
+				t.Fatalf("Signal(%v) error = %v", tt.signal, err)
+			}
+
+			if got := processExitCode(t, cmd); got != tt.status {
+				t.Fatalf("process exit code = %d, want %d; stderr = %q", got, tt.status, stderr.String())
+			}
+			if got, want := stdout.String(), ""; got != want {
+				t.Fatalf("stdout = %q, want copy skipped", got)
+			}
+			if got, want := readMarker(t, done), "done"; got != want {
+				t.Fatalf("on completion marker = %q, want %q", got, want)
+			}
+			if got, want := readMarker(t, offMarker), "x"; got != want {
+				t.Fatalf("off marker = %q, want exactly one invocation %q", got, want)
+			}
+		})
+	}
+}
+
+func TestSubprocessSignalDuringOnFailureSkipsOff(t *testing.T) {
+	tests := []struct {
+		name   string
+		signal os.Signal
+		status int
+	}{
+		{name: "interrupt", signal: os.Interrupt, status: 130},
+		{name: "terminate", signal: syscall.SIGTERM, status: 143},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			binary := buildPipewispBinary(t)
+			directory := t.TempDir()
+			ready := filepath.Join(directory, "on.started")
+			offMarker := filepath.Join(directory, "off.marker")
+			onCommand := "printf started > " + unixQuote(ready) + "; sleep 1; exit 7"
+			offCommand := "printf x >> " + unixQuote(offMarker)
+
+			cmd := exec.Command(binary, "--on", onCommand, "--off", offCommand)
+			var stderr bytes.Buffer
+			cmd.Stderr = &stderr
+			if err := cmd.Start(); err != nil {
+				t.Fatalf("Start() error = %v", err)
+			}
+
+			waitForMarker(t, ready)
+			if err := cmd.Process.Signal(tt.signal); err != nil {
+				t.Fatalf("Signal(%v) error = %v", tt.signal, err)
+			}
+
+			if got := processExitCode(t, cmd); got != tt.status {
+				t.Fatalf("process exit code = %d, want %d; stderr = %q", got, tt.status, stderr.String())
+			}
+			if _, err := os.Stat(offMarker); !os.IsNotExist(err) {
+				t.Fatalf("off marker exists after on failure: err = %v", err)
+			}
+		})
+	}
+}
+
+func TestSubprocessSignalDuringOffAfterEOF(t *testing.T) {
+	tests := []struct {
+		name   string
+		signal os.Signal
+		status int
+	}{
+		{name: "interrupt", signal: os.Interrupt, status: 130},
+		{name: "terminate", signal: syscall.SIGTERM, status: 143},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			binary := buildPipewispBinary(t)
+			directory := t.TempDir()
+			started := filepath.Join(directory, "off.started")
+			done := filepath.Join(directory, "off.done")
+			offCommand := "printf started > " + unixQuote(started) + "; sleep 1; printf done > " + unixQuote(done)
+
+			cmd := exec.Command(binary, "--off", offCommand)
+			cmd.Stdin = strings.NewReader("")
+			var stderr bytes.Buffer
+			cmd.Stderr = &stderr
+			if err := cmd.Start(); err != nil {
+				t.Fatalf("Start() error = %v", err)
+			}
+
+			waitForMarker(t, started)
+			if err := cmd.Process.Signal(tt.signal); err != nil {
+				t.Fatalf("Signal(%v) error = %v", tt.signal, err)
+			}
+
+			if got := processExitCode(t, cmd); got != tt.status {
+				t.Fatalf("process exit code = %d, want %d; stderr = %q", got, tt.status, stderr.String())
+			}
+			if got, want := readMarker(t, done), "done"; got != want {
+				t.Fatalf("off completion marker = %q, want %q", got, want)
+			}
+		})
+	}
+}
+
+func TestSubprocessHookSIGPIPEUsesDefaultDisposition(t *testing.T) {
+	binary := buildPipewispBinary(t)
+	cmd := exec.Command(binary, "--on", "kill -PIPE $$; echo survived")
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+
+	if got := processExitCode(t, cmd); got == 0 {
+		t.Fatalf("process exit code = %d, want hook failure; stderr = %q", got, stderr.String())
+	}
+	if strings.Contains(stdout.String(), "survived") || strings.Contains(stderr.String(), "survived") {
+		t.Fatalf("hook continued after SIGPIPE: stdout=%q stderr=%q", stdout.String(), stderr.String())
+	}
+}
+
 func TestSubprocessBrokenPipeIsSuccessfulAndSilent(t *testing.T) {
 	binary := buildPipewispBinary(t)
 	marker := filepath.Join(t.TempDir(), "off.marker")
@@ -173,6 +322,15 @@ func waitForMarker(t *testing.T, path string) {
 			t.Fatalf("marker %q was not created before timeout", path)
 		}
 	}
+}
+
+func readMarker(t *testing.T, path string) string {
+	t.Helper()
+	contents, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile(%q) error = %v", path, err)
+	}
+	return string(contents)
 }
 
 func buildPipewispBinary(t *testing.T) string {

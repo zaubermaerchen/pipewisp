@@ -11,10 +11,10 @@ import (
 
 const windowsErrorNoData = syscall.Errno(0xe8)
 
-func subscribePassthroughSignals() (chan os.Signal, func()) {
+func subscribePassthroughSignals() (*signalTracker, func()) {
 	signals := make(chan os.Signal, 1)
 	signal.Notify(signals, os.Interrupt)
-	return signals, func() {
+	return &signalTracker{signals: signals}, func() {
 		signal.Stop(signals)
 	}
 }

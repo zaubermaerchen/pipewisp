@@ -95,3 +95,39 @@ func TestFinishCompletionSignalStatusWinsOffFailure(t *testing.T) {
 		t.Fatal("finishCompletion() diagnostics are empty, want off failure")
 	}
 }
+
+func TestFinishCompletionRecordsSignalDuringOff(t *testing.T) {
+	signals := make(chan os.Signal, 1)
+	tracker := &signalTracker{signals: signals}
+	var diagnostics bytes.Buffer
+	status := finishCompletionWithTracker(completion{}, func() error {
+		signals <- os.Interrupt
+		return errors.New("off failed")
+	}, &diagnostics, tracker)
+
+	if status != 130 {
+		t.Fatalf("finishCompletionWithTracker() status = %d, want 130", status)
+	}
+}
+
+func TestSignalTrackerKeepsFirstSignal(t *testing.T) {
+	signals := make(chan os.Signal, 2)
+	first := testSignal("first")
+	second := testSignal("second")
+	signals <- first
+	signals <- second
+	tracker := &signalTracker{signals: signals}
+
+	if got := tracker.poll(); got != first {
+		t.Fatalf("signalTracker.poll() = %v, want %v", got, first)
+	}
+	if got := tracker.first; got != first {
+		t.Fatalf("signalTracker.first = %v, want %v", got, first)
+	}
+}
+
+type testSignal string
+
+func (s testSignal) Signal() {}
+
+func (s testSignal) String() string { return string(s) }

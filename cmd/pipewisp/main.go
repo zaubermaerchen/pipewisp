@@ -28,22 +28,29 @@ func run(in io.Reader, out io.Writer, diagnostics io.Writer) int {
 }
 
 func runWithOptions(opts options, in io.Reader, out io.Writer, diagnostics io.Writer) int {
-	signals, stopSignals := subscribePassthroughSignals()
+	tracker, stopSignals := subscribePassthroughSignals()
 	defer stopSignals()
 
 	if opts.onSet {
 		if err := runHook("on", opts.on, diagnostics); err != nil {
+			if sig := tracker.poll(); sig != nil {
+				return signalExitCode(sig)
+			}
 			return 1
 		}
 	}
 
-	copyDone := make(chan error, 1)
-	go func() {
-		_, err := io.Copy(out, in)
-		copyDone <- err
-	}()
-
-	done := selectCompletion(copyDone, signals)
+	var done completion
+	if sig := tracker.poll(); sig != nil {
+		done = completion{signal: sig}
+	} else {
+		copyDone := make(chan error, 1)
+		go func() {
+			_, err := io.Copy(out, in)
+			copyDone <- err
+		}()
+		done = tracker.waitForCopy(copyDone)
+	}
 	if done.signal != nil {
 		closeInput(in)
 	}
@@ -54,7 +61,7 @@ func runWithOptions(opts options, in io.Reader, out io.Writer, diagnostics io.Wr
 			return runHook("off", opts.off, diagnostics)
 		}
 	}
-	return finishCompletion(done, runOff, diagnostics)
+	return finishCompletionWithTracker(done, runOff, diagnostics, tracker)
 }
 
 func closeInput(in io.Reader) {

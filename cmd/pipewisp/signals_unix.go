@@ -9,14 +9,14 @@ import (
 	"syscall"
 )
 
-func subscribePassthroughSignals() (chan os.Signal, func()) {
-	// Without this, a closed downstream pipe can terminate the process before
-	// io.Copy can report syscall.EPIPE to the lifecycle coordinator.
-	signal.Ignore(syscall.SIGPIPE)
+func subscribePassthroughSignals() (*signalTracker, func()) {
 	signals := make(chan os.Signal, 1)
 	signal.Notify(signals, os.Interrupt, syscall.SIGTERM)
-	return signals, func() {
+	sigpipe := make(chan os.Signal, 1)
+	signal.Notify(sigpipe, syscall.SIGPIPE)
+	return &signalTracker{signals: signals}, func() {
 		signal.Stop(signals)
+		signal.Stop(sigpipe)
 	}
 }
 
