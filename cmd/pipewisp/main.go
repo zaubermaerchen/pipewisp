@@ -28,25 +28,39 @@ func run(in io.Reader, out io.Writer, diagnostics io.Writer) int {
 }
 
 func runWithOptions(opts options, in io.Reader, out io.Writer, diagnostics io.Writer) int {
+	signals, stopSignals := subscribePassthroughSignals()
+	defer stopSignals()
+
 	if opts.onSet {
 		if err := runHook("on", opts.on, diagnostics); err != nil {
 			return 1
 		}
 	}
 
-	_, copyErr := io.Copy(out, in)
-	status := 0
-	if copyErr != nil {
-		reportDiagnostic(diagnostics, copyErr)
-		status = 1
+	copyDone := make(chan error, 1)
+	go func() {
+		_, err := io.Copy(out, in)
+		copyDone <- err
+	}()
+
+	done := selectCompletion(copyDone, signals)
+	if done.signal != nil {
+		closeInput(in)
 	}
 
+	var runOff func() error
 	if opts.offSet {
-		if err := runHook("off", opts.off, diagnostics); err != nil {
-			status = 1
+		runOff = func() error {
+			return runHook("off", opts.off, diagnostics)
 		}
 	}
-	return status
+	return finishCompletion(done, runOff, diagnostics)
+}
+
+func closeInput(in io.Reader) {
+	if closer, ok := in.(io.Closer); ok {
+		_ = closer.Close()
+	}
 }
 
 func reportDiagnostic(diagnostics io.Writer, err error) {
