@@ -46,6 +46,8 @@ func runWithOptions(opts options, in io.Reader, out io.Writer, diagnostics io.Wr
 	if sig := tracker.poll(); sig != nil {
 		// Activation completed under interruption; skip copying but still proceed to optional cleanup.
 		done = completion{signal: sig}
+	} else if opts.idleSet {
+		done = runIdleCopy(opts, in, out, diagnostics, tracker)
 	} else {
 		copyDone := make(chan error, 1)
 		go func() {

@@ -6,13 +6,20 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"time"
 )
 
 type options struct {
-	on     string
-	onSet  bool
-	off    string
-	offSet bool
+	on          string
+	onSet       bool
+	off         string
+	offSet      bool
+	idle        time.Duration
+	idleSet     bool
+	onIdle      string
+	onIdleSet   bool
+	onResume    string
+	onResumeSet bool
 }
 
 func parseArgs(args []string) (options, bool, error) {
@@ -64,11 +71,81 @@ func parseArgs(args []string) (options, bool, error) {
 				return options{}, false, err
 			}
 			opts.off, opts.offSet = value, true
+		case arg == "--idle":
+			if opts.idleSet {
+				return options{}, false, fmt.Errorf("--idle specified more than once")
+			}
+			value, next, err := parseSeparateDuration(args, i, "--idle")
+			if err != nil {
+				return options{}, false, err
+			}
+			opts.idle, opts.idleSet = value, true
+			i = next
+		case strings.HasPrefix(arg, "--idle="):
+			if opts.idleSet {
+				return options{}, false, fmt.Errorf("--idle specified more than once")
+			}
+			value, err := parseDuration(arg[len("--idle="):], "--idle")
+			if err != nil {
+				return options{}, false, err
+			}
+			opts.idle, opts.idleSet = value, true
+		case arg == "--on-idle":
+			if opts.onIdleSet {
+				return options{}, false, fmt.Errorf("--on-idle specified more than once")
+			}
+			value, next, err := parseSeparateValue(args, i, "--on-idle")
+			if err != nil {
+				return options{}, false, err
+			}
+			opts.onIdle, opts.onIdleSet = value, true
+			i = next
+		case strings.HasPrefix(arg, "--on-idle="):
+			if opts.onIdleSet {
+				return options{}, false, fmt.Errorf("--on-idle specified more than once")
+			}
+			value, err := validateCommand(arg[len("--on-idle="):], "--on-idle")
+			if err != nil {
+				return options{}, false, err
+			}
+			opts.onIdle, opts.onIdleSet = value, true
+		case arg == "--on-resume":
+			if opts.onResumeSet {
+				return options{}, false, fmt.Errorf("--on-resume specified more than once")
+			}
+			value, next, err := parseSeparateValue(args, i, "--on-resume")
+			if err != nil {
+				return options{}, false, err
+			}
+			opts.onResume, opts.onResumeSet = value, true
+			i = next
+		case strings.HasPrefix(arg, "--on-resume="):
+			if opts.onResumeSet {
+				return options{}, false, fmt.Errorf("--on-resume specified more than once")
+			}
+			value, err := validateCommand(arg[len("--on-resume="):], "--on-resume")
+			if err != nil {
+				return options{}, false, err
+			}
+			opts.onResume, opts.onResumeSet = value, true
 		case strings.HasPrefix(arg, "-"):
 			return options{}, false, fmt.Errorf("unknown option %s", arg)
 		default:
 			return options{}, false, fmt.Errorf("unexpected positional argument %s", arg)
 		}
+	}
+
+	if opts.idleSet && opts.idle <= 0 {
+		return options{}, false, fmt.Errorf("--idle must be greater than zero")
+	}
+	if opts.onIdleSet && !opts.idleSet {
+		return options{}, false, fmt.Errorf("--on-idle requires --idle")
+	}
+	if opts.onResumeSet && !opts.idleSet {
+		return options{}, false, fmt.Errorf("--on-resume requires --idle")
+	}
+	if opts.idleSet && !opts.onIdleSet && !opts.onResumeSet {
+		return options{}, false, fmt.Errorf("--idle requires --on-idle or --on-resume")
 	}
 
 	return opts, false, nil
@@ -86,6 +163,32 @@ func parseSeparateValue(args []string, optionIndex int, option string) (string, 
 	return value, valueIndex, nil
 }
 
+func parseSeparateDuration(args []string, optionIndex int, option string) (time.Duration, int, error) {
+	valueIndex := optionIndex + 1
+	if valueIndex >= len(args) {
+		return 0, optionIndex, fmt.Errorf("missing value for %s", option)
+	}
+	if strings.HasPrefix(args[valueIndex], "--") {
+		return 0, optionIndex, fmt.Errorf("missing value for %s", option)
+	}
+	value, err := parseDuration(args[valueIndex], option)
+	if err != nil {
+		return 0, optionIndex, err
+	}
+	return value, valueIndex, nil
+}
+
+func parseDuration(value, option string) (time.Duration, error) {
+	if strings.TrimSpace(value) == "" {
+		return 0, fmt.Errorf("empty duration for %s", option)
+	}
+	duration, err := time.ParseDuration(value)
+	if err != nil {
+		return 0, fmt.Errorf("invalid duration for %s: %w", option, err)
+	}
+	return duration, nil
+}
+
 func validateCommand(command, option string) (string, error) {
 	if strings.TrimSpace(command) == "" {
 		return "", fmt.Errorf("empty command for %s", option)
@@ -94,5 +197,5 @@ func validateCommand(command, option string) (string, error) {
 }
 
 func printUsage(out io.Writer) {
-	_, _ = out.Write([]byte("Usage: pipewisp [--on COMMAND] [--off COMMAND]\n"))
+	_, _ = out.Write([]byte("Usage: pipewisp [--on COMMAND] [--off COMMAND] [--idle DURATION] [--on-idle COMMAND] [--on-resume COMMAND]\n"))
 }
