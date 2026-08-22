@@ -160,6 +160,7 @@ type idleCopyRunner struct {
 	opts          options
 	diagnostics   io.Writer
 	tracker       *signalTracker
+	state         *lifecycleState
 	pump          *idleReadPump
 	writePump     *idleWritePump
 	timer         *time.Timer
@@ -174,10 +175,16 @@ type idleCopyRunner struct {
 }
 
 func runIdleCopy(opts options, in io.Reader, out io.Writer, diagnostics io.Writer, tracker *signalTracker) completion {
+	state := newLifecycleState()
+	return runIdleCopyWithState(opts, in, state.writer(out), diagnostics, tracker, state)
+}
+
+func runIdleCopyWithState(opts options, in io.Reader, out io.Writer, diagnostics io.Writer, tracker *signalTracker, state *lifecycleState) completion {
 	runner := &idleCopyRunner{
 		opts:        opts,
 		diagnostics: diagnostics,
 		tracker:     tracker,
+		state:       state,
 		pump:        newIdleReadPump(in),
 		writePump:   newIdleWritePump(out),
 		timer:       time.NewTimer(opts.idle),
@@ -281,7 +288,7 @@ func (runner *idleCopyRunner) handleRead(result idleReadResult) bool {
 					runner.abortForSignal(sig)
 					return false
 				}
-				if err := runHook("on-resume", runner.opts.onResume, runner.diagnostics); err != nil {
+				if err := runHookWithContext("on-resume", runner.opts.onResume, runner.state.snapshot("resume", ""), runner.diagnostics); err != nil {
 					runner.done.resumeErr = err
 				}
 				if sig := runner.pollSignal(); sig != nil {
@@ -349,7 +356,7 @@ func (runner *idleCopyRunner) handleFirstData() bool {
 		runner.abortForSignal(sig)
 		return false
 	}
-	if err := runHook("on-first-data", runner.opts.onFirstData, runner.diagnostics); err != nil {
+	if err := runHookWithContext("on-first-data", runner.opts.onFirstData, runner.state.snapshot("first-data", ""), runner.diagnostics); err != nil {
 		runner.done.firstDataHookFailed = true
 	}
 	if sig := runner.pollSignal(); sig != nil {
@@ -371,7 +378,7 @@ func (runner *idleCopyRunner) handleIdle() bool {
 			runner.abortForSignal(sig)
 			return false
 		}
-		if err := runHook("on-idle", runner.opts.onIdle, runner.diagnostics); err != nil {
+		if err := runHookWithContext("on-idle", runner.opts.onIdle, runner.state.snapshot("idle", ""), runner.diagnostics); err != nil {
 			runner.done.idleErr = err
 		}
 		if sig := runner.pollSignal(); sig != nil {

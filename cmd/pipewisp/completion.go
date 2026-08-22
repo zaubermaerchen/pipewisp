@@ -78,6 +78,31 @@ func classifyCompletion(done completion) completionKind {
 	return completionCopyError
 }
 
+func completionReason(done completion) string {
+	if done.signal != nil {
+		return "signal"
+	}
+	if done.copyErr == nil {
+		if done.firstDataHookFailed {
+			// A first-data hook failure is not an I/O failure, and no lifecycle
+			// reason among the public values describes it.
+			return ""
+		}
+		return "eof"
+	}
+
+	var firstDataErr *firstDataHookError
+	if errors.As(done.copyErr, &firstDataErr) && firstDataErr.readErr == nil {
+		// The copy stopped because the hook failed. Keep io-error reserved for
+		// an actual stream I/O failure.
+		return ""
+	}
+	if isBrokenPipe(done.copyErr) {
+		return "broken-pipe"
+	}
+	return "io-error"
+}
+
 func finishCompletion(done completion, runOff func() error, diagnostics io.Writer) int {
 	return finishCompletionWithTracker(done, runOff, diagnostics, nil)
 }
