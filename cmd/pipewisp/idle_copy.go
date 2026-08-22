@@ -19,17 +19,19 @@ type idleReadResult struct {
 }
 
 type idleReadPump struct {
-	in       io.Reader
-	requests chan struct{}
-	results  chan idleReadResult
-	stop     chan struct{}
-	stopOnce sync.Once
+	in          io.Reader
+	requests    chan struct{}
+	readStarted chan struct{}
+	results     chan idleReadResult
+	stop        chan struct{}
+	stopOnce    sync.Once
 }
 
 func newIdleReadPump(in io.Reader) *idleReadPump {
 	pump := &idleReadPump{
-		in:       in,
-		requests: make(chan struct{}, 1),
+		in:          in,
+		requests:    make(chan struct{}, 1),
+		readStarted: make(chan struct{}),
 		// The pump waits for a request before every Read, so this slot can
 		// hold only the current result and never provides read-ahead.
 		results: make(chan idleReadResult, 1),
@@ -40,6 +42,7 @@ func newIdleReadPump(in io.Reader) *idleReadPump {
 }
 
 func (pump *idleReadPump) read() {
+	buffer := make([]byte, idleReadBufferSize)
 	for {
 		select {
 		case <-pump.requests:
@@ -47,7 +50,13 @@ func (pump *idleReadPump) read() {
 			return
 		}
 
-		buffer := make([]byte, idleReadBufferSize)
+		// Keep the pump from entering Read until the coordinator has observed
+		// the handshake and started the active timer for this read.
+		select {
+		case pump.readStarted <- struct{}{}:
+		case <-pump.stop:
+			return
+		}
 		n, err := pump.in.Read(buffer)
 		result := idleReadResult{data: buffer[:n], err: err}
 		select {
@@ -88,6 +97,8 @@ type idleCopyRunner struct {
 	active      bool
 	idle        bool
 	requested   bool
+	writeDone   <-chan error
+	pendingErr  error
 	done        completion
 }
 
@@ -121,8 +132,16 @@ func runIdleCopy(opts options, in io.Reader, out io.Writer, diagnostics io.Write
 			runner.rememberSignal(sig)
 			runner.abortForSignal(tracker.first)
 			return runner.done
+		case <-runner.pump.readStarted:
+			if !runner.handleReadStarted() {
+				return runner.done
+			}
 		case result := <-runner.pump.results:
 			if !runner.handleRead(result) {
+				return runner.done
+			}
+		case err := <-runner.writeDone:
+			if !runner.handleWriteDone(err) {
 				return runner.done
 			}
 		case <-runner.timerC:
@@ -134,6 +153,11 @@ func runIdleCopy(opts options, in io.Reader, out io.Writer, diagnostics io.Write
 			case result := <-runner.pump.results:
 				if !runner.handleRead(result) {
 					return runner.done
+				}
+				if len(result.data) == 0 && result.err == nil {
+					if !runner.handleIdle() {
+						return runner.done
+					}
 				}
 			default:
 				if !runner.handleIdle() {
@@ -147,6 +171,17 @@ func runIdleCopy(opts options, in io.Reader, out io.Writer, diagnostics io.Write
 func (runner *idleCopyRunner) requestRead() {
 	runner.pump.request()
 	runner.requested = true
+}
+
+func (runner *idleCopyRunner) handleReadStarted() bool {
+	if sig := runner.pollSignal(); sig != nil {
+		runner.abortForSignal(sig)
+		return false
+	}
+	if runner.requested && runner.active && !runner.idle && runner.timerC == nil {
+		runner.startTimer()
+	}
+	return true
 }
 
 func (runner *idleCopyRunner) handleRead(result idleReadResult) bool {
@@ -165,7 +200,7 @@ func (runner *idleCopyRunner) handleRead(result idleReadResult) bool {
 					runner.abortForSignal(sig)
 					return false
 				}
-				if err := runHook("resume", runner.opts.onResume, runner.diagnostics); err != nil {
+				if err := runHook("on-resume", runner.opts.onResume, runner.diagnostics); err != nil {
 					runner.done.resumeErr = err
 				}
 				if sig := runner.pollSignal(); sig != nil {
@@ -176,30 +211,38 @@ func (runner *idleCopyRunner) handleRead(result idleReadResult) bool {
 			runner.idle = false
 		}
 
-		if err := writeIdleChunk(runner.out, result.data); err != nil {
-			runner.done.copyErr = err
-			runner.stopAfterCopyError()
-			return false
-		}
-		if sig := runner.pollSignal(); sig != nil {
-			runner.abortForSignal(sig)
-			return false
-		}
-
-		if result.err != nil {
-			runner.recordReadError(result.err)
-			runner.stopAfterCopyError()
-			return false
-		}
-
-		runner.active = true
-		runner.resetTimer()
+		runner.stopTimer()
+		runner.pendingErr = result.err
+		runner.writeDone = writeIdleChunkAsync(runner.out, result.data)
+		return true
 	} else if result.err != nil {
 		runner.recordReadError(result.err)
 		runner.stopAfterCopyError()
 		return false
 	}
 
+	runner.requestRead()
+	return true
+}
+
+func (runner *idleCopyRunner) handleWriteDone(err error) bool {
+	runner.writeDone = nil
+	if sig := runner.pollSignal(); sig != nil {
+		runner.abortForSignal(sig)
+		return false
+	}
+	if err != nil {
+		runner.done.copyErr = err
+		runner.stopAfterCopyError()
+		return false
+	}
+	if runner.pendingErr != nil {
+		runner.recordReadError(runner.pendingErr)
+		runner.stopAfterCopyError()
+		return false
+	}
+	runner.pendingErr = nil
+	runner.active = true
 	runner.requestRead()
 	return true
 }
@@ -216,7 +259,7 @@ func (runner *idleCopyRunner) handleIdle() bool {
 			runner.abortForSignal(sig)
 			return false
 		}
-		if err := runHook("idle", runner.opts.onIdle, runner.diagnostics); err != nil {
+		if err := runHook("on-idle", runner.opts.onIdle, runner.diagnostics); err != nil {
 			runner.done.idleErr = err
 		}
 		if sig := runner.pollSignal(); sig != nil {
@@ -230,15 +273,9 @@ func (runner *idleCopyRunner) handleIdle() bool {
 	return true
 }
 
-func (runner *idleCopyRunner) resetTimer() {
-	if !runner.active {
+func (runner *idleCopyRunner) startTimer() {
+	if !runner.active || runner.idle || runner.timerC != nil {
 		return
-	}
-	if !runner.timer.Stop() {
-		select {
-		case <-runner.timer.C:
-		default:
-		}
 	}
 	runner.timer.Reset(runner.opts.idle)
 	runner.timerC = runner.timer.C
@@ -299,4 +336,12 @@ func writeIdleChunk(out io.Writer, data []byte) error {
 		}
 	}
 	return nil
+}
+
+func writeIdleChunkAsync(out io.Writer, data []byte) <-chan error {
+	done := make(chan error, 1)
+	go func() {
+		done <- writeIdleChunk(out, data)
+	}()
+	return done
 }
