@@ -386,6 +386,30 @@ func TestIdleReadPumpReusesReadBuffer(t *testing.T) {
 	}
 }
 
+func TestIdleWritePumpReusesSingleWorker(t *testing.T) {
+	writer := &oneByteWriter{}
+	pump := newIdleWritePump(writer)
+	defer pump.stopWriting()
+
+	chunks := [][]byte{[]byte("first"), []byte("second"), []byte("third")}
+	for _, chunk := range chunks {
+		if !pump.request(chunk) {
+			t.Fatal("idle write pump stopped before request")
+		}
+		select {
+		case err := <-pump.results:
+			if err != nil {
+				t.Fatalf("idle write pump error = %v", err)
+			}
+		case <-time.After(time.Second):
+			t.Fatal("idle write pump did not publish write result")
+		}
+	}
+	if got, want := writer.output.String(), "firstsecondthird"; got != want {
+		t.Fatalf("idle write output = %q, want %q", got, want)
+	}
+}
+
 func TestIdleDataWithEOFIsCopiedWithoutResume(t *testing.T) {
 	input := dataEOFReader{data: []byte{0x00, 0x80, 0xff}}
 	var output bytes.Buffer

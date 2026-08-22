@@ -86,12 +86,82 @@ func (pump *idleReadPump) stopReading(closeReader bool) {
 	})
 }
 
+type idleWritePump struct {
+	// Both channels have one slot: the runner submits one chunk and waits for
+	// its result before requesting another read, so this worker never writes
+	// ahead of the coordinator.
+	out      io.Writer
+	requests chan []byte
+	results  chan error
+	stop     chan struct{}
+	stopOnce sync.Once
+}
+
+func newIdleWritePump(out io.Writer) *idleWritePump {
+	pump := &idleWritePump{
+		out:      out,
+		requests: make(chan []byte, 1),
+		results:  make(chan error, 1),
+		stop:     make(chan struct{}),
+	}
+	go pump.write()
+	return pump
+}
+
+func (pump *idleWritePump) write() {
+	for {
+		// Check stop before selecting a request so a signal does not start a
+		// queued write that the coordinator has already abandoned.
+		select {
+		case <-pump.stop:
+			return
+		default:
+		}
+
+		var data []byte
+		select {
+		case data = <-pump.requests:
+		case <-pump.stop:
+			return
+		}
+		err := writeIdleChunk(pump.out, data)
+
+		// A Write cannot be interrupted through io.Writer. Once it returns,
+		// stop without publishing a result if the runner has already exited.
+		select {
+		case <-pump.stop:
+			return
+		default:
+		}
+		select {
+		case pump.results <- err:
+		case <-pump.stop:
+			return
+		}
+	}
+}
+
+func (pump *idleWritePump) request(data []byte) bool {
+	select {
+	case pump.requests <- data:
+		return true
+	case <-pump.stop:
+		return false
+	}
+}
+
+func (pump *idleWritePump) stopWriting() {
+	pump.stopOnce.Do(func() {
+		close(pump.stop)
+	})
+}
+
 type idleCopyRunner struct {
 	opts        options
-	out         io.Writer
 	diagnostics io.Writer
 	tracker     *signalTracker
 	pump        *idleReadPump
+	writePump   *idleWritePump
 	timer       *time.Timer
 	timerC      <-chan time.Time
 	active      bool
@@ -105,16 +175,17 @@ type idleCopyRunner struct {
 func runIdleCopy(opts options, in io.Reader, out io.Writer, diagnostics io.Writer, tracker *signalTracker) completion {
 	runner := &idleCopyRunner{
 		opts:        opts,
-		out:         out,
 		diagnostics: diagnostics,
 		tracker:     tracker,
 		pump:        newIdleReadPump(in),
+		writePump:   newIdleWritePump(out),
 		timer:       time.NewTimer(opts.idle),
 	}
 	runner.stopTimer()
 	defer func() {
 		runner.stopTimer()
 		runner.pump.stopReading(false)
+		runner.writePump.stopWriting()
 	}()
 
 	if sig := runner.pollSignal(); sig != nil {
@@ -213,7 +284,16 @@ func (runner *idleCopyRunner) handleRead(result idleReadResult) bool {
 
 		runner.stopTimer()
 		runner.pendingErr = result.err
-		runner.writeDone = writeIdleChunkAsync(runner.out, result.data)
+		runner.writeDone = runner.writePump.results
+		if !runner.writePump.request(result.data) {
+			runner.writeDone = nil
+			if sig := runner.pollSignal(); sig != nil {
+				runner.abortForSignal(sig)
+			} else {
+				runner.stopAfterCopyError()
+			}
+			return false
+		}
 		return true
 	} else if result.err != nil {
 		runner.recordReadError(result.err)
@@ -303,6 +383,7 @@ func (runner *idleCopyRunner) recordReadError(err error) {
 func (runner *idleCopyRunner) stopAfterCopyError() {
 	runner.stopTimer()
 	runner.pump.stopReading(false)
+	runner.writePump.stopWriting()
 }
 
 func (runner *idleCopyRunner) rememberSignal(sig os.Signal) {
@@ -319,6 +400,7 @@ func (runner *idleCopyRunner) abortForSignal(sig os.Signal) {
 	runner.done.signal = sig
 	runner.stopTimer()
 	runner.pump.stopReading(true)
+	runner.writePump.stopWriting()
 }
 
 func writeIdleChunk(out io.Writer, data []byte) error {
@@ -336,12 +418,4 @@ func writeIdleChunk(out io.Writer, data []byte) error {
 		}
 	}
 	return nil
-}
-
-func writeIdleChunkAsync(out io.Writer, data []byte) <-chan error {
-	done := make(chan error, 1)
-	go func() {
-		done <- writeIdleChunk(out, data)
-	}()
-	return done
 }
