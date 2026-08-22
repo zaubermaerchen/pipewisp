@@ -19,6 +19,33 @@ The module can also be installed directly once published:
 go install github.com/zaubermaerchen/pipewisp/cmd/pipewisp@latest
 ```
 
+## Download releases
+
+Tagged binaries are available from the repository's
+[GitHub Releases](https://github.com/zaubermaerchen/pipewisp/releases). Each
+release provides these six archives: `linux_amd64`, `linux_arm64`,
+`darwin_amd64`, `darwin_arm64`, `windows_amd64`, and `windows_arm64`.
+
+Download the archive for your platform and verify it with the accompanying
+checksums file before extracting it. For example, on Linux:
+
+```sh
+archive=pipewisp_v0.1.0_linux_amd64.tar.gz
+grep -F -- "  $archive" SHA256SUMS > "$archive.sha256" || exit 1
+sha256sum -c "$archive.sha256"
+```
+
+On macOS, replace the final command with
+`shasum -a 256 -c "$archive.sha256"`. On Windows
+PowerShell:
+
+```powershell
+$archive = "pipewisp_v0.1.0_windows_amd64.zip"
+$expected = (Get-Content SHA256SUMS | Where-Object { $_ -like "*  $archive" }).Split()[0]
+$actual = (Get-FileHash -Algorithm SHA256 $archive).Hash.ToLowerInvariant()
+if ($actual -ne $expected) { throw "checksum mismatch: $archive" }
+```
+
 ## Usage
 
 ```text
