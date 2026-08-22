@@ -49,34 +49,45 @@ if ($actual -ne $expected) { throw "checksum mismatch: $archive" }
 ## Usage
 
 ```text
-pipewisp [--on COMMAND] [--off COMMAND]
+pipewisp [--on COMMAND] [--on-first-data COMMAND] [--off COMMAND]
 ```
 
-Each of `--on` and `--off` is optional and may be specified at most once.
-The separated and equals forms are supported:
+Each of `--on`, `--on-first-data`, and `--off` is optional and may be
+specified at most once. The separated and equals forms are supported:
 
 ```sh
 producer | pipewisp
 producer | pipewisp --on 'printf "started\\n"' --off 'printf "stopped\\n"'
+producer | pipewisp --on-first-data 'printf "observed\\n"'
 producer | pipewisp --on='prepare' --off='cleanup'
+producer | pipewisp --on='prepare' --on-first-data='observe' --off='cleanup'
 pipewisp --help
 ```
 
 Duplicate options, unknown options, missing or empty commands, and positional
-arguments are errors. `--help` prints usage and exits successfully.
+arguments are errors. `--on-first-data` is independent of `--on` and `--off`;
+all three options may be used together. `--help` prints usage and exits
+successfully.
 
 Commands are executed synchronously in this order:
 
 1. `--on`, if present
-2. the unmodified stdin-to-stdout copy
-3. `--off`, if present, after EOF, an I/O error, or a handled signal
+2. read the first input data bytes, if any
+3. `--on-first-data`, if present, immediately after those bytes are observed
+4. write those first bytes and copy the remaining stdin-to-stdout stream
+5. `--off`, if present, after EOF, an I/O error, or a handled signal
+
+The first-data command runs exactly once and only when the input contains at
+least one byte. It completes before the first input byte is written to stdout;
+the input stream is otherwise preserved byte-for-byte and in order. Empty
+input and EOF without data do not run the first-data command.
 
 On Unix, hooks run as `/bin/sh -c COMMAND`. On Windows, they run as
 `cmd.exe /C COMMAND`. Hook stdin is isolated from the passthrough stream: it
 is connected to an empty/null input. Hook stdout and stderr are both sent to
 pipewisp's stderr; stdout contains passthrough data only.
 
-Both hook options execute their command through a shell. Do not pass
+All lifecycle hook options execute their command through a shell. Do not pass
 untrusted or unsanitized command strings: shell metacharacters have their
 normal platform-specific meaning.
 
@@ -88,6 +99,7 @@ normal platform-specific meaning.
 | Downstream broken pipe (EPIPE) | 0 | Treat downstream closure as normal; run `--off` and suppress the broken-pipe diagnostic. |
 | Other copy/I/O error | 1 | Report the error and run `--off`, if present. |
 | `--on` failure | 1 | Report the hook failure; do not copy data or run `--off`. |
+| `--on-first-data` failure | 1 | Report the hook failure, write the already-read first bytes unchanged, stop before reading more input, and run `--off`, if present. |
 | `--off` failure | 1 | Report the hook failure. |
 | SIGINT / Ctrl+C | 130 | Run `--off` synchronously; this signal status wins if `--off` also fails. |
 | SIGTERM (Unix) | 143 | Run `--off` synchronously; this signal status wins if `--off` also fails. |
@@ -97,9 +109,10 @@ EPIPE copy result instead of terminating the process before cleanup can run.
 EPIPE only describes pipewisp's downstream; it cannot keep a consumer alive,
 reopen a closed pipe, or determine how an upstream producer reacts.
 
-## v0.1 scope and cleanup limits
+## Scope and cleanup limits
 
-The v0.1 interface intentionally has no configuration files, multiple hooks,
-hook timeouts, idle/resume mode, verbose mode, or option to ignore hook
-failures. Cleanup cannot run after SIGKILL, an unrecoverable process crash, or
-power loss, because those conditions do not allow a user-space hook to execute.
+The interface intentionally has no configuration files, multiple hooks of the
+same lifecycle kind, hook timeouts, idle/resume mode, verbose mode, or option
+to ignore hook failures. Cleanup cannot run after SIGKILL, an unrecoverable
+process crash, or power loss, because those conditions do not allow a
+user-space hook to execute.
