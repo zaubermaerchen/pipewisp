@@ -7,6 +7,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"syscall"
 	"testing"
@@ -25,6 +26,15 @@ func TestWindowsBrokenPipeClassification(t *testing.T) {
 	}
 	if errors.Is(errors.New("ordinary"), syscall.ERROR_BROKEN_PIPE) {
 		t.Fatal("ordinary error unexpectedly classified as broken pipe")
+	}
+}
+
+func TestWindowsFirstDataHookFailureWinsBrokenPipe(t *testing.T) {
+	for _, err := range []error{syscall.ERROR_BROKEN_PIPE, windowsErrorNoData, syscall.EPIPE} {
+		done := completion{copyErr: err, firstDataHookFailed: true}
+		if got := finishCompletion(done, nil, io.Discard); got != 1 {
+			t.Errorf("finishCompletion(%v) = %d, want 1", err, got)
+		}
 	}
 }
 

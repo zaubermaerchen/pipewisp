@@ -202,6 +202,44 @@ func TestSubprocessSignalDuringOnFailureSkipsOff(t *testing.T) {
 	}
 }
 
+func TestSubprocessSignalDuringFirstDataHookWaitsBeforeOff(t *testing.T) {
+	binary := buildPipewispBinary(t)
+	directory := t.TempDir()
+	started := filepath.Join(directory, "first.started")
+	done := filepath.Join(directory, "first.done")
+	events := filepath.Join(directory, "events")
+	onFirstDataCommand := "printf started > " + unixQuote(started) + "; sleep 1; printf done > " + unixQuote(done) + "; printf first >> " + unixQuote(events)
+	offCommand := "printf off >> " + unixQuote(events)
+
+	cmd := exec.Command(binary, "--on-first-data", onFirstDataCommand, "--off", offCommand)
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		t.Fatalf("StdinPipe() error = %v", err)
+	}
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	defer stdin.Close()
+
+	if _, err := stdin.Write([]byte("input")); err != nil {
+		t.Fatalf("stdin.Write() error = %v", err)
+	}
+	waitForMarker(t, started)
+	if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
+		t.Fatalf("Signal(SIGTERM) error = %v", err)
+	}
+
+	if got := processExitCode(t, cmd); got != 143 {
+		t.Fatalf("process exit code = %d, want 143; stdout = %q; stderr = %q", got, stdout.String(), stderr.String())
+	}
+	if got, want := readMarker(t, done)+readMarker(t, events), "donefirstoff"; got != want {
+		t.Fatalf("first-data/off markers = %q, want %q", got, want)
+	}
+}
+
 func TestSubprocessSignalDuringOffAfterEOF(t *testing.T) {
 	tests := []struct {
 		name   string

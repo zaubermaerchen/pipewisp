@@ -3,15 +3,17 @@ package main
 // This file coordinates copy completion, signal tracking, and final status selection.
 
 import (
+	"errors"
 	"io"
 	"os"
 )
 
 type completion struct {
-	copyErr   error
-	idleErr   error
-	resumeErr error
-	signal    os.Signal
+	copyErr             error
+	signal              os.Signal
+	firstDataHookFailed bool
+	idleErr             error
+	resumeErr           error
 }
 
 type signalTracker struct {
@@ -91,7 +93,7 @@ func finishCompletionWithTracker(done completion, runOff func() error, diagnosti
 	var offErr error
 	switch kind {
 	case completionCopyError:
-		reportDiagnostic(diagnostics, done.copyErr)
+		reportCopyError(diagnostics, done.copyErr)
 	}
 
 	if runOff != nil {
@@ -107,8 +109,21 @@ func finishCompletionWithTracker(done completion, runOff func() error, diagnosti
 	if classifyCompletion(done) == completionSignal {
 		return signalExitCode(done.signal)
 	}
-	if offErr != nil || kind == completionCopyError || done.idleErr != nil || done.resumeErr != nil {
+	if offErr != nil || kind == completionCopyError || done.firstDataHookFailed || done.idleErr != nil || done.resumeErr != nil {
 		return 1
 	}
 	return 0
+}
+
+func reportCopyError(diagnostics io.Writer, err error) {
+	var hookErr *firstDataHookError
+	if errors.As(err, &hookErr) {
+		// runHook already reported the hook failure, but a read can return data
+		// and a separate error together; preserve that independent diagnostic.
+		if hookErr.readErr != nil {
+			reportDiagnostic(diagnostics, hookErr.readErr)
+		}
+		return
+	}
+	reportDiagnostic(diagnostics, err)
 }

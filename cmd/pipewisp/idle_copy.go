@@ -157,19 +157,20 @@ func (pump *idleWritePump) stopWriting() {
 }
 
 type idleCopyRunner struct {
-	opts        options
-	diagnostics io.Writer
-	tracker     *signalTracker
-	pump        *idleReadPump
-	writePump   *idleWritePump
-	timer       *time.Timer
-	timerC      <-chan time.Time
-	active      bool
-	idle        bool
-	requested   bool
-	writeDone   <-chan error
-	pendingErr  error
-	done        completion
+	opts          options
+	diagnostics   io.Writer
+	tracker       *signalTracker
+	pump          *idleReadPump
+	writePump     *idleWritePump
+	timer         *time.Timer
+	timerC        <-chan time.Time
+	active        bool
+	idle          bool
+	requested     bool
+	writeDone     <-chan error
+	pendingErr    error
+	firstDataSeen bool
+	done          completion
 }
 
 func runIdleCopy(opts options, in io.Reader, out io.Writer, diagnostics io.Writer, tracker *signalTracker) completion {
@@ -263,7 +264,16 @@ func (runner *idleCopyRunner) handleRead(result idleReadResult) bool {
 	}
 
 	if len(result.data) > 0 {
-		if runner.idle {
+		firstDataPending := runner.opts.onFirstDataSet && !runner.firstDataSeen
+		if firstDataPending {
+			// Run this before any resume hook so the initial data transition is
+			// always first-data -> write. A failure still permits this chunk to
+			// be written, but prevents all subsequent reads.
+			if !runner.handleFirstData() {
+				return false
+			}
+		}
+		if runner.idle && !firstDataPending {
 			// A resume hook is part of the transition into active mode. A
 			// failed hook does not roll back the transition or discard data.
 			if runner.opts.onResumeSet {
@@ -321,9 +331,31 @@ func (runner *idleCopyRunner) handleWriteDone(err error) bool {
 		runner.stopAfterCopyError()
 		return false
 	}
+	if runner.done.firstDataHookFailed {
+		// The chunk that triggered the first-data hook was already written, but
+		// no later read is allowed after a hook failure.
+		runner.stopAfterCopyError()
+		return false
+	}
 	runner.pendingErr = nil
 	runner.active = true
 	runner.requestRead()
+	return true
+}
+
+func (runner *idleCopyRunner) handleFirstData() bool {
+	runner.firstDataSeen = true
+	if sig := runner.pollSignal(); sig != nil {
+		runner.abortForSignal(sig)
+		return false
+	}
+	if err := runHook("on-first-data", runner.opts.onFirstData, runner.diagnostics); err != nil {
+		runner.done.firstDataHookFailed = true
+	}
+	if sig := runner.pollSignal(); sig != nil {
+		runner.abortForSignal(sig)
+		return false
+	}
 	return true
 }
 

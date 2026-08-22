@@ -23,6 +23,18 @@ func TestClassifyCompletionRecognizesBrokenPipe(t *testing.T) {
 	}
 }
 
+func TestFirstDataHookFailureWinsBrokenPipe(t *testing.T) {
+	var diagnostics bytes.Buffer
+	config := options{onFirstData: failingHookCommand("first"), onFirstDataSet: true}
+
+	if got := runWithOptions(config, strings.NewReader("input"), errorWriter{err: syscall.EPIPE}, &diagnostics); got != 1 {
+		t.Fatalf("runWithOptions() exit code = %d, want 1", got)
+	}
+	if got := diagnostics.String(); !strings.Contains(got, "on-first-data hook failed") {
+		t.Fatalf("diagnostics = %q, want first-data hook failure", got)
+	}
+}
+
 func TestSignalExitCodeUnix(t *testing.T) {
 	if got := signalExitCode(syscall.SIGTERM); got != 143 {
 		t.Fatalf("signalExitCode(SIGTERM) = %d, want 143", got)
@@ -40,5 +52,24 @@ func TestIdleBrokenPipeIsSuccessfulAndSilent(t *testing.T) {
 	}
 	if diagnostics.Len() != 0 {
 		t.Fatalf("finishCompletion() diagnostics = %q, want empty", diagnostics.String())
+	}
+}
+
+func TestIdleFirstDataHookFailureWinsBrokenPipe(t *testing.T) {
+	signals := make(chan os.Signal, 1)
+	tracker := &signalTracker{signals: signals}
+	config := options{
+		idle:           time.Hour,
+		idleSet:        true,
+		onFirstData:    failingHookCommand("first-data"),
+		onFirstDataSet: true,
+	}
+	var diagnostics bytes.Buffer
+	done := runIdleCopy(config, strings.NewReader("input"), errorWriter{err: syscall.EPIPE}, &diagnostics, tracker)
+	if got := finishCompletion(done, nil, &diagnostics); got != 1 {
+		t.Fatalf("finishCompletion() status = %d, want 1", got)
+	}
+	if !strings.Contains(diagnostics.String(), "on-first-data hook failed") {
+		t.Fatalf("diagnostics = %q, want first-data hook failure", diagnostics.String())
 	}
 }

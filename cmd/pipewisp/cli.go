@@ -10,16 +10,18 @@ import (
 )
 
 type options struct {
-	on          string
-	onSet       bool
-	off         string
-	offSet      bool
-	idle        time.Duration
-	idleSet     bool
-	onIdle      string
-	onIdleSet   bool
-	onResume    string
-	onResumeSet bool
+	on             string
+	onSet          bool
+	onFirstData    string
+	onFirstDataSet bool
+	off            string
+	offSet         bool
+	idle           time.Duration
+	idleSet        bool
+	onIdle         string
+	onIdleSet      bool
+	onResume       string
+	onResumeSet    bool
 }
 
 func parseArgs(args []string) (options, bool, error) {
@@ -52,6 +54,25 @@ func parseArgs(args []string) (options, bool, error) {
 				return options{}, false, err
 			}
 			opts.on, opts.onSet = value, true
+		case arg == "--on-first-data":
+			if opts.onFirstDataSet {
+				return options{}, false, fmt.Errorf("--on-first-data specified more than once")
+			}
+			value, next, err := parseSeparateValue(args, i, "--on-first-data")
+			if err != nil {
+				return options{}, false, err
+			}
+			opts.onFirstData, opts.onFirstDataSet = value, true
+			i = next
+		case strings.HasPrefix(arg, "--on-first-data="):
+			if opts.onFirstDataSet {
+				return options{}, false, fmt.Errorf("--on-first-data specified more than once")
+			}
+			value, err := validateCommand(arg[len("--on-first-data="):], "--on-first-data")
+			if err != nil {
+				return options{}, false, err
+			}
+			opts.onFirstData, opts.onFirstDataSet = value, true
 		case arg == "--off":
 			if opts.offSet {
 				return options{}, false, fmt.Errorf("--off specified more than once")
@@ -197,5 +218,5 @@ func validateCommand(command, option string) (string, error) {
 }
 
 func printUsage(out io.Writer) {
-	_, _ = out.Write([]byte("Usage: pipewisp [--on COMMAND] [--off COMMAND] [--idle DURATION] [--on-idle COMMAND] [--on-resume COMMAND]\n"))
+	_, _ = out.Write([]byte("Usage: pipewisp [--on COMMAND] [--on-first-data COMMAND] [--off COMMAND] [--idle DURATION] [--on-idle COMMAND] [--on-resume COMMAND]\n"))
 }

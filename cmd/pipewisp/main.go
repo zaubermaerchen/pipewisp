@@ -43,6 +43,7 @@ func runWithOptions(opts options, in io.Reader, out io.Writer, diagnostics io.Wr
 	}
 
 	var done completion
+	var firstData *firstDataReader
 	if sig := tracker.poll(); sig != nil {
 		// Activation completed under interruption; skip copying but still proceed to optional cleanup.
 		done = completion{signal: sig}
@@ -50,14 +51,35 @@ func runWithOptions(opts options, in io.Reader, out io.Writer, diagnostics io.Wr
 		done = runIdleCopy(opts, in, out, diagnostics, tracker)
 	} else {
 		copyDone := make(chan error, 1)
+		input := in
+		if opts.onFirstDataSet {
+			firstData = &firstDataReader{
+				reader:   in,
+				finished: make(chan struct{}),
+				hook: func() error {
+					return runHook("on-first-data", opts.onFirstData, diagnostics)
+				},
+			}
+			input = firstData
+		}
 		go func() {
-			_, err := io.Copy(out, in)
+			_, err := io.Copy(out, input)
 			copyDone <- err
 		}()
 		done = tracker.waitForCopy(copyDone)
 	}
 	if done.signal != nil {
+		if firstData != nil {
+			if firstData.cancel() {
+				// A signal can interrupt the wait while the first-data hook is
+				// running. Wait for that hook so cleanup never overlaps it.
+				<-firstData.finished
+			}
+		}
 		closeInput(in)
+	}
+	if firstData != nil {
+		done.firstDataHookFailed = firstData.hookFailed()
 	}
 
 	var runOff func() error

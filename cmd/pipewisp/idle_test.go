@@ -432,6 +432,100 @@ func TestIdleDataWithEOFIsCopiedWithoutResume(t *testing.T) {
 	}
 }
 
+func TestIdleFirstDataHookPrecedesFirstWrite(t *testing.T) {
+	input := dataEOFReader{data: []byte("first")}
+	events := make(chan string, 16)
+	output := &eventChannelWriter{label: "output", events: events}
+	diagnostics := &eventChannelWriter{label: "diagnostics", events: events}
+	config := options{
+		idle:           time.Hour,
+		idleSet:        true,
+		onFirstData:    hookOutputCommand("first-data"),
+		onFirstDataSet: true,
+	}
+
+	if got := runWithOptions(config, &input, output, diagnostics); got != 0 {
+		t.Fatalf("runWithOptions() exit code = %d, want 0", got)
+	}
+	var observed []string
+	for {
+		select {
+		case event := <-events:
+			observed = append(observed, event)
+		default:
+			firstDataIndex := eventIndex(observed, "diagnostics:first-data")
+			writeIndex := eventIndex(observed, "output:first")
+			if firstDataIndex < 0 || writeIndex < 0 || firstDataIndex > writeIndex {
+				t.Fatalf("event order = %#v, want first-data before first write", observed)
+			}
+			return
+		}
+	}
+}
+
+func TestIdleFirstDataHookFailureWritesOnlyFirstChunkAndRunsOff(t *testing.T) {
+	input := &shortReadReader{chunks: [][]byte{[]byte("first"), []byte("later")}}
+	var output bytes.Buffer
+	var diagnostics bytes.Buffer
+	config := options{
+		idle:           time.Hour,
+		idleSet:        true,
+		onFirstData:    failingHookCommand("first-data"),
+		onFirstDataSet: true,
+		off:            hookOutputCommand("off"),
+		offSet:         true,
+	}
+
+	if got := runWithOptions(config, input, &output, &diagnostics); got != 1 {
+		t.Fatalf("runWithOptions() exit code = %d, want 1", got)
+	}
+	if got, want := output.String(), "first"; got != want {
+		t.Fatalf("copy output = %q, want %q", got, want)
+	}
+	cleanDiagnostics := strings.ReplaceAll(diagnostics.String(), "\r", "")
+	if !strings.Contains(cleanDiagnostics, "on-first-data hook failed") {
+		t.Fatalf("diagnostics = %q, want first-data hook failure", diagnostics.String())
+	}
+	if !strings.Contains(cleanDiagnostics, "off") {
+		t.Fatalf("diagnostics = %q, want off hook output", diagnostics.String())
+	}
+}
+
+func TestIdleFirstDataAndResumeLifecycleOrder(t *testing.T) {
+	input := &gatedReader{first: []byte("a"), second: []byte("b"), secondReady: make(chan struct{})}
+	events := make(chan string, 16)
+	output := &eventChannelWriter{label: "output", events: events}
+	diagnostics := &eventChannelWriter{label: "diagnostics", events: events}
+	config := options{
+		idle:           5 * time.Millisecond,
+		idleSet:        true,
+		onFirstData:    hookOutputCommand("first-data"),
+		onFirstDataSet: true,
+		onIdle:         hookOutputCommand("idle"),
+		onIdleSet:      true,
+		onResume:       hookOutputCommand("resume"),
+		onResumeSet:    true,
+	}
+
+	done := make(chan int, 1)
+	go func() { done <- runWithOptions(config, input, output, diagnostics) }()
+	waitForEvent(t, events, "diagnostics:first-data")
+	waitForEvent(t, events, "output:a")
+	waitForEvent(t, events, "diagnostics:idle")
+	input.releaseSecond()
+	waitForEvent(t, events, "diagnostics:resume")
+	waitForEvent(t, events, "output:b")
+
+	select {
+	case status := <-done:
+		if status != 0 {
+			t.Fatalf("runWithOptions() exit code = %d, want 0", status)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("runWithOptions() did not finish")
+	}
+}
+
 func TestIdleZeroLengthReadBeforeDataDoesNotStartTimer(t *testing.T) {
 	input := &zeroThenGatedReader{data: []byte("data"), ready: make(chan struct{})}
 	var output bytes.Buffer

@@ -5,6 +5,7 @@ package main
 import (
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestParseArgs(t *testing.T) {
@@ -24,9 +25,32 @@ func TestParseArgs(t *testing.T) {
 			want: options{on: "prepare", onSet: true, off: "cleanup", offSet: true},
 		},
 		{
+			name: "first-data hook separated",
+			args: []string{"--on-first-data", "observe"},
+			want: options{onFirstData: "observe", onFirstDataSet: true},
+		},
+		{
 			name: "equals form",
-			args: []string{"--on=prepare", "--off=cleanup"},
-			want: options{on: "prepare", onSet: true, off: "cleanup", offSet: true},
+			args: []string{"--on=prepare", "--on-first-data=observe", "--off=cleanup"},
+			want: options{on: "prepare", onSet: true, onFirstData: "observe", onFirstDataSet: true, off: "cleanup", offSet: true},
+		},
+		{
+			name: "all lifecycle options",
+			args: []string{"--on", "prepare", "--on-first-data", "observe", "--off", "cleanup", "--idle", "25ms", "--on-idle", "idle", "--on-resume", "resume"},
+			want: options{
+				on:             "prepare",
+				onSet:          true,
+				onFirstData:    "observe",
+				onFirstDataSet: true,
+				off:            "cleanup",
+				offSet:         true,
+				idle:           25 * time.Millisecond,
+				idleSet:        true,
+				onIdle:         "idle",
+				onIdleSet:      true,
+				onResume:       "resume",
+				onResumeSet:    true,
+			},
 		},
 	}
 
@@ -85,6 +109,16 @@ func TestParseRejectsInvalidArguments(t *testing.T) {
 			message: "--off specified more than once",
 		},
 		{
+			name:    "duplicate first-data separated",
+			args:    []string{"--on-first-data", "first", "--on-first-data", "second"},
+			message: "--on-first-data specified more than once",
+		},
+		{
+			name:    "duplicate first-data equals",
+			args:    []string{"--on-first-data", "first", "--on-first-data=second"},
+			message: "--on-first-data specified more than once",
+		},
+		{
 			name:    "missing on value",
 			args:    []string{"--on"},
 			message: "missing value for --on",
@@ -95,6 +129,16 @@ func TestParseRejectsInvalidArguments(t *testing.T) {
 			message: "missing value for --off",
 		},
 		{
+			name:    "missing first-data value",
+			args:    []string{"--on-first-data"},
+			message: "missing value for --on-first-data",
+		},
+		{
+			name:    "missing first-data value before another option",
+			args:    []string{"--on-first-data", "--on", "prepare"},
+			message: "missing value for --on-first-data",
+		},
+		{
 			name:    "empty on equals value",
 			args:    []string{"--on="},
 			message: "empty command for --on",
@@ -103,6 +147,16 @@ func TestParseRejectsInvalidArguments(t *testing.T) {
 			name:    "empty off separated value",
 			args:    []string{"--off", ""},
 			message: "empty command for --off",
+		},
+		{
+			name:    "empty first-data equals value",
+			args:    []string{"--on-first-data="},
+			message: "empty command for --on-first-data",
+		},
+		{
+			name:    "whitespace first-data separated value",
+			args:    []string{"--on-first-data", " \t"},
+			message: "empty command for --on-first-data",
 		},
 		{
 			name:    "whitespace on separated value",
