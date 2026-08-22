@@ -8,8 +8,10 @@ import (
 )
 
 type completion struct {
-	copyErr error
-	signal  os.Signal
+	copyErr   error
+	idleErr   error
+	resumeErr error
+	signal    os.Signal
 }
 
 type signalTracker struct {
@@ -105,7 +107,7 @@ func finishCompletionWithTracker(done completion, runOff func() error, diagnosti
 	if classifyCompletion(done) == completionSignal {
 		return signalExitCode(done.signal)
 	}
-	if offErr != nil || kind == completionCopyError {
+	if offErr != nil || kind == completionCopyError || done.idleErr != nil || done.resumeErr != nil {
 		return 1
 	}
 	return 0
