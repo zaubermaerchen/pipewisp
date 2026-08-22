@@ -49,11 +49,13 @@ if ($actual -ne $expected) { throw "checksum mismatch: $archive" }
 ## Usage
 
 ```text
-pipewisp [--on COMMAND] [--on-first-data COMMAND] [--off COMMAND]
+pipewisp [--on COMMAND] [--on-first-data COMMAND] [--off COMMAND] [--idle DURATION] [--on-idle COMMAND] [--on-resume COMMAND]
 ```
 
-Each of `--on`, `--on-first-data`, and `--off` is optional and may be
-specified at most once. The separated and equals forms are supported:
+Each hook option is optional and may be specified at most once. `--idle` is a
+Go duration such as `250ms` or `2s`; it must be positive and must be used with
+at least one of `--on-idle` and `--on-resume`. The separated and equals forms
+are supported:
 
 ```sh
 producer | pipewisp
@@ -61,13 +63,16 @@ producer | pipewisp --on 'printf "started\\n"' --off 'printf "stopped\\n"'
 producer | pipewisp --on-first-data 'printf "observed\\n"'
 producer | pipewisp --on='prepare' --off='cleanup'
 producer | pipewisp --on='prepare' --on-first-data='observe' --off='cleanup'
+producer | pipewisp --idle 2s --on-idle 'printf "idle\\n"' --on-resume 'printf "active\\n"'
+producer | pipewisp --idle=250ms --on-idle='notify-idle'
 pipewisp --help
 ```
 
-Duplicate options, unknown options, missing or empty commands, and positional
-arguments are errors. `--on-first-data` is independent of `--on` and `--off`;
-all three options may be used together. `--help` prints usage and exits
-successfully.
+Duplicate options, unknown options, missing or empty commands or durations,
+non-positive or invalid durations, invalid idle-hook combinations, and
+positional arguments are errors. `--on-first-data` is independent of `--on`,
+`--off`, and idle mode; all lifecycle options may be used together.
+`--help` prints usage and exits successfully.
 
 Commands are executed synchronously in this order:
 
@@ -81,6 +86,15 @@ The first-data command runs exactly once and only when the input contains at
 least one byte. It completes before the first input byte is written to stdout;
 the input stream is otherwise preserved byte-for-byte and in order. Empty
 input and EOF without data do not run the first-data command.
+
+With idle mode enabled, the timer starts only after the first non-empty read.
+It runs while pipewisp is waiting for more input and is paused during stdout
+writes. Each non-empty read while active resets the timer. When the timer
+expires, `--on-idle` runs once for that idle interval, if configured. The first
+non-empty read after an idle interval runs `--on-resume`, if configured, before
+that data is written to stdout. When `--on-first-data` is also configured, the
+first-data hook runs before any resume hook and the initial data is not treated
+as a resume transition. EOF and signals do not trigger resume.
 
 On Unix, hooks run as `/bin/sh -c COMMAND`. On Windows, they run as
 `cmd.exe /C COMMAND`. Hook stdin is isolated from the passthrough stream: it
@@ -100,6 +114,7 @@ normal platform-specific meaning.
 | Other copy/I/O error | 1 | Report the error and run `--off`, if present. |
 | `--on` failure | 1 | Report the hook failure; do not copy data or run `--off`. |
 | `--on-first-data` failure | 1 | Report the hook failure, write the already-read first bytes unchanged, stop before reading more input, and run `--off`, if present. |
+| `--on-idle` or `--on-resume` failure | 1 | Report the hook failure, continue copying, and run `--off`, if present. |
 | `--off` failure | 1 | Report the hook failure. |
 | SIGINT / Ctrl+C | 130 | Run `--off` synchronously; this signal status wins if `--off` also fails. |
 | SIGTERM (Unix) | 143 | Run `--off` synchronously; this signal status wins if `--off` also fails. |
@@ -111,8 +126,7 @@ reopen a closed pipe, or determine how an upstream producer reacts.
 
 ## Scope and cleanup limits
 
-The interface intentionally has no configuration files, multiple hooks of the
-same lifecycle kind, hook timeouts, idle/resume mode, verbose mode, or option
-to ignore hook failures. Cleanup cannot run after SIGKILL, an unrecoverable
-process crash, or power loss, because those conditions do not allow a
-user-space hook to execute.
+The interface has no configuration files, multiple hooks of the same lifecycle
+kind, hook timeouts, verbose mode, or option to ignore hook failures. Cleanup
+cannot run after SIGKILL, an unrecoverable process crash, or power loss,
+because those conditions do not allow a user-space hook to execute.

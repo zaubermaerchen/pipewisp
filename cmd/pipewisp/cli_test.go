@@ -5,6 +5,7 @@ package main
 import (
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestParseArgs(t *testing.T) {
@@ -32,6 +33,24 @@ func TestParseArgs(t *testing.T) {
 			name: "equals form",
 			args: []string{"--on=prepare", "--on-first-data=observe", "--off=cleanup"},
 			want: options{on: "prepare", onSet: true, onFirstData: "observe", onFirstDataSet: true, off: "cleanup", offSet: true},
+		},
+		{
+			name: "all lifecycle options",
+			args: []string{"--on", "prepare", "--on-first-data", "observe", "--off", "cleanup", "--idle", "25ms", "--on-idle", "idle", "--on-resume", "resume"},
+			want: options{
+				on:             "prepare",
+				onSet:          true,
+				onFirstData:    "observe",
+				onFirstDataSet: true,
+				off:            "cleanup",
+				offSet:         true,
+				idle:           25 * time.Millisecond,
+				idleSet:        true,
+				onIdle:         "idle",
+				onIdleSet:      true,
+				onResume:       "resume",
+				onResumeSet:    true,
+			},
 		},
 	}
 

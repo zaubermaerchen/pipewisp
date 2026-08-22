@@ -12,6 +12,8 @@ type completion struct {
 	copyErr             error
 	signal              os.Signal
 	firstDataHookFailed bool
+	idleErr             error
+	resumeErr           error
 }
 
 type signalTracker struct {
@@ -107,7 +109,7 @@ func finishCompletionWithTracker(done completion, runOff func() error, diagnosti
 	if classifyCompletion(done) == completionSignal {
 		return signalExitCode(done.signal)
 	}
-	if offErr != nil || kind == completionCopyError || done.firstDataHookFailed {
+	if offErr != nil || kind == completionCopyError || done.firstDataHookFailed || done.idleErr != nil || done.resumeErr != nil {
 		return 1
 	}
 	return 0

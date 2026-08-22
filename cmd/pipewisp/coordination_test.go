@@ -112,6 +112,21 @@ func TestFinishCompletionRecordsSignalDuringOff(t *testing.T) {
 	}
 }
 
+func TestFinishCompletionPropagatesIdleResumeHookFailure(t *testing.T) {
+	for _, done := range []completion{
+		{idleErr: errors.New("idle failed")},
+		{resumeErr: errors.New("resume failed")},
+	} {
+		var diagnostics bytes.Buffer
+		if got := finishCompletion(done, nil, &diagnostics); got != 1 {
+			t.Errorf("finishCompletion(%#v) status = %d, want 1", done, got)
+		}
+		if diagnostics.Len() != 0 {
+			t.Errorf("finishCompletion(%#v) diagnostics = %q, hook failure was already reported", done, diagnostics.String())
+		}
+	}
+}
+
 func TestSignalTrackerKeepsFirstSignal(t *testing.T) {
 	signals := make(chan os.Signal, 2)
 	first := testSignal("first")
