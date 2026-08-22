@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"testing"
+	"time"
 )
 
 func TestRunPreservesBinaryInput(t *testing.T) {
@@ -37,6 +38,22 @@ func TestRunReportsCopyError(t *testing.T) {
 	}
 }
 
+func TestRunWithOptionsRequiresIdleSetForIdleMode(t *testing.T) {
+	input := &writerToReader{data: []byte("input")}
+	var output bytes.Buffer
+	var diagnostics bytes.Buffer
+
+	if got := runWithOptions(options{idle: time.Second}, input, &output, &diagnostics); got != 0 {
+		t.Fatalf("runWithOptions() exit code = %d, want 0", got)
+	}
+	if !input.writeToCalled {
+		t.Fatal("runWithOptions() bypassed the normal io.Copy path without idleSet")
+	}
+	if got, want := output.String(), "input"; got != want {
+		t.Fatalf("runWithOptions() output = %q, want %q", got, want)
+	}
+}
+
 type errorWriter struct {
 	err error
 }
@@ -46,3 +63,24 @@ func (w errorWriter) Write([]byte) (int, error) {
 }
 
 var _ io.Writer = errorWriter{}
+
+type writerToReader struct {
+	data          []byte
+	writeToCalled bool
+}
+
+func (r *writerToReader) Read(p []byte) (int, error) {
+	if len(r.data) == 0 {
+		return 0, io.EOF
+	}
+	n := copy(p, r.data)
+	r.data = r.data[n:]
+	return n, nil
+}
+
+func (r *writerToReader) WriteTo(w io.Writer) (int64, error) {
+	r.writeToCalled = true
+	n, err := w.Write(r.data)
+	r.data = r.data[n:]
+	return int64(n), err
+}
