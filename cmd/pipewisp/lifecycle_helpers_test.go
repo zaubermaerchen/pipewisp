@@ -1,5 +1,7 @@
 package main
 
+// This file builds platform-aware shell snippets used by lifecycle tests.
+
 import (
 	"runtime"
 	"strings"

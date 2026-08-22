@@ -1,5 +1,7 @@
 package main
 
+// This file tests valid option combinations and rejected CLI arguments.
+
 import (
 	"strings"
 	"testing"

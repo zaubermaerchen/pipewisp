@@ -2,6 +2,8 @@
 
 package main
 
+// This file verifies Windows broken-pipe classification and interrupt status.
+
 import (
 	"errors"
 	"fmt"

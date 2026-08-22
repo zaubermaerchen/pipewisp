@@ -2,6 +2,8 @@
 
 package main
 
+// This file tests Unix-specific copy-error classification and signal status values.
+
 import (
 	"errors"
 	"syscall"

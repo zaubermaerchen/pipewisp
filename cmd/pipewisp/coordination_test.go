@@ -1,5 +1,7 @@
 package main
 
+// This file tests completion races, signal precedence, and cleanup invocation count.
+
 import (
 	"bytes"
 	"errors"

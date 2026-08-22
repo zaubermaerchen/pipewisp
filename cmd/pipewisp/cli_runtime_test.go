@@ -1,5 +1,7 @@
 package main
 
+// This file tests CLI error reporting and help behavior through the runtime entry point.
+
 import (
 	"bytes"
 	"strings"

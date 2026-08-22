@@ -2,6 +2,8 @@
 
 package main
 
+// This file configures Windows interrupt handling and broken-pipe classification.
+
 import (
 	"errors"
 	"os"
@@ -10,6 +12,9 @@ import (
 )
 
 const windowsErrorNoData = syscall.Errno(0xe8) // ERROR_NO_DATA (232): The pipe is being closed.
+
+// pipewisp uses POSIX-compatible signal statuses for its cross-platform CLI contract.
+const signalExitCodeBase = 128
 
 func subscribePassthroughSignals() (*signalTracker, func()) {
 	signals := make(chan os.Signal, 1)
@@ -27,7 +32,7 @@ func isBrokenPipe(err error) bool {
 
 func signalExitCode(sig os.Signal) int {
 	if sig == os.Interrupt {
-		return 130
+		return signalExitCodeBase + int(syscall.SIGINT)
 	}
 	return 1
 }

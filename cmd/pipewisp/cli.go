@@ -1,5 +1,7 @@
 package main
 
+// This file parses command-line options and renders the usage text.
+
 import (
 	"fmt"
 	"io"

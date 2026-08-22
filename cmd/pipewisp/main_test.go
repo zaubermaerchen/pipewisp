@@ -1,5 +1,7 @@
 package main
 
+// This file verifies binary preservation and ordinary copy-error reporting.
+
 import (
 	"bytes"
 	"errors"

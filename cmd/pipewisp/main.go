@@ -1,3 +1,4 @@
+// Package main implements the pipewisp CLI and its stream lifecycle.
 package main
 
 import (
@@ -28,6 +29,7 @@ func run(in io.Reader, out io.Writer, diagnostics io.Writer) int {
 }
 
 func runWithOptions(opts options, in io.Reader, out io.Writer, diagnostics io.Writer) int {
+	// Subscribe before on so a signal during activation is retained for final status selection.
 	tracker, stopSignals := subscribePassthroughSignals()
 	defer stopSignals()
 
@@ -42,6 +44,7 @@ func runWithOptions(opts options, in io.Reader, out io.Writer, diagnostics io.Wr
 
 	var done completion
 	if sig := tracker.poll(); sig != nil {
+		// Activation completed under interruption; skip copying but still proceed to optional cleanup.
 		done = completion{signal: sig}
 	} else {
 		copyDone := make(chan error, 1)
@@ -65,6 +68,7 @@ func runWithOptions(opts options, in io.Reader, out io.Writer, diagnostics io.Wr
 }
 
 func closeInput(in io.Reader) {
+	// Closing an interruptible input can unblock a copy waiting to read.
 	if closer, ok := in.(io.Closer); ok {
 		_ = closer.Close()
 	}

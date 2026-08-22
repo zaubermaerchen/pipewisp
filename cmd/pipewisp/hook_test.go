@@ -1,5 +1,7 @@
 package main
 
+// This file verifies platform-specific shell command construction.
+
 import (
 	"runtime"
 	"testing"

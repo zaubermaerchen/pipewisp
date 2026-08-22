@@ -1,5 +1,7 @@
 package main
 
+// This file tests hook ordering, stream isolation, and lifecycle error handling.
+
 import (
 	"bytes"
 	"fmt"

@@ -1,5 +1,7 @@
 package main
 
+// This file coordinates copy completion, signal tracking, and final status selection.
+
 import (
 	"io"
 	"os"
@@ -32,6 +34,7 @@ func (tracker *signalTracker) poll() os.Signal {
 	for {
 		select {
 		case sig := <-tracker.signals:
+			// Keep the first signal because later signals cannot change the shell-visible status.
 			if tracker.first == nil && sig != nil {
 				tracker.first = sig
 			}
@@ -52,6 +55,7 @@ func (tracker *signalTracker) waitForCopy(copyDone <-chan error) completion {
 		}
 		return completion{signal: tracker.first}
 	case err := <-copyDone:
+		// A signal delivered with copy completion must win even when both are ready.
 		tracker.poll()
 		return completion{copyErr: err, signal: tracker.first}
 	}
@@ -93,6 +97,7 @@ func finishCompletionWithTracker(done completion, runOff func() error, diagnosti
 	}
 
 	if tracker != nil {
+		// Cleanup is synchronous, so recheck after off to catch a signal during the hook.
 		if sig := tracker.poll(); sig != nil {
 			done.signal = sig
 		}

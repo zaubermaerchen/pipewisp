@@ -2,6 +2,8 @@
 
 package main
 
+// This file runs bounded Unix subprocess tests for signals, cleanup, and EPIPE.
+
 import (
 	"bytes"
 	"context"
