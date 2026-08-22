@@ -10,7 +10,8 @@ Verify the requested change without modifying source files or expanding the user
 ## Establish the scope
 
 - Determine whether the target is the working tree, staged changes, a commit range, or a pull request. Infer the smallest reasonable scope when the user does not specify one.
-- Inspect status and both staged and unstaged diffs. Preserve unrelated or pre-existing changes.
+- Inspect the selected target's actual diff: the working tree and index for local changes, the requested base and head for a commit range, or the pull request's base and head for a PR.
+- Also inspect local status and staged and unstaged diffs when they can reveal changes outside the selected target. Preserve unrelated or pre-existing changes.
 - Identify Go files, tests, build tags, module files, CI configuration, concurrency, and OS-specific behavior affected by the change.
 
 ## Select and run checks
