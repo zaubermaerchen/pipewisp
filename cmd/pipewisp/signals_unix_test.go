@@ -168,7 +168,7 @@ func TestSubprocessSignalDuringOnSkipsCopy(t *testing.T) {
 	}
 }
 
-func TestSubprocessSignalDuringOnFailureSkipsOff(t *testing.T) {
+func TestSubprocessSignalDuringOnFailureRunsOffOnce(t *testing.T) {
 	tests := []struct {
 		name   string
 		signal os.Signal
