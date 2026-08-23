@@ -21,7 +21,7 @@ func resolveVersion(linkerVersion string, buildInfo *debug.BuildInfo, buildInfoO
 	if linkerVersion != "" {
 		return linkerVersion
 	}
-	if buildInfoOK && buildInfo != nil && buildInfo.Main.Version != "" && buildInfo.Main.Version != "(devel)" && !hasVCSRevision(buildInfo) && !isPseudoVersion(buildInfo.Main.Version) {
+	if buildInfoOK && buildInfo != nil && buildInfo.Main.Version != "" && buildInfo.Main.Version != "(devel)" && !isVCSModified(buildInfo) && !isPseudoVersion(buildInfo.Main.Version) {
 		return buildInfo.Main.Version
 	}
 	return "devel"
@@ -31,12 +31,12 @@ func isPseudoVersion(value string) bool {
 	return goPseudoVersionPattern.MatchString(value)
 }
 
-func hasVCSRevision(buildInfo *debug.BuildInfo) bool {
+func isVCSModified(buildInfo *debug.BuildInfo) bool {
 	if buildInfo == nil {
 		return false
 	}
 	for _, setting := range buildInfo.Settings {
-		if setting.Key == "vcs.revision" && setting.Value != "" {
+		if setting.Key == "vcs.modified" && setting.Value == "true" {
 			return true
 		}
 	}

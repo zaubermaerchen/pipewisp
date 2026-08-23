@@ -18,12 +18,15 @@ func TestResolveVersion(t *testing.T) {
 		want          string
 	}{
 		{
-			name:          "linker value takes precedence",
-			linkerValue:   "v0.2.0",
-			buildInfoOK:   true,
-			buildVersion:  "v0.0.0-20260823093759-0a06056e3945",
-			buildSettings: []debug.BuildSetting{{Key: "vcs.revision", Value: "0a06056e3945"}},
-			want:          "v0.2.0",
+			name:         "linker value takes precedence",
+			linkerValue:  "v0.2.0",
+			buildInfoOK:  true,
+			buildVersion: "v0.0.0-20260823093759-0a06056e3945",
+			buildSettings: []debug.BuildSetting{
+				{Key: "vcs.revision", Value: "0a06056e3945"},
+				{Key: "vcs.modified", Value: "true"},
+			},
+			want: "v0.2.0",
 		},
 		{
 			name:         "build info is second choice",
@@ -32,16 +35,55 @@ func TestResolveVersion(t *testing.T) {
 			want:         "v0.2.0",
 		},
 		{
+			name:         "clean tagged build with vcs revision is adopted",
+			buildInfoOK:  true,
+			buildVersion: "v0.2.0",
+			buildSettings: []debug.BuildSetting{
+				{Key: "vcs.revision", Value: "0a06056e3945"},
+				{Key: "vcs.modified", Value: "false"},
+			},
+			want: "v0.2.0",
+		},
+		{
+			name:         "tagged build with revision only is adopted",
+			buildInfoOK:  true,
+			buildVersion: "v0.2.0",
+			buildSettings: []debug.BuildSetting{
+				{Key: "vcs.revision", Value: "0a06056e3945"},
+			},
+			want: "v0.2.0",
+		},
+		{
+			name:         "dirty tagged build falls back",
+			buildInfoOK:  true,
+			buildVersion: "v0.2.0+dirty",
+			buildSettings: []debug.BuildSetting{
+				{Key: "vcs.revision", Value: "0a06056e3945"},
+				{Key: "vcs.modified", Value: "true"},
+			},
+			want: "devel",
+		},
+		{
 			name:         "devel build info falls back",
 			buildInfoOK:  true,
 			buildVersion: "(devel)",
 			want:         "devel",
 		},
 		{
-			name:          "vcs stamped pseudo-version falls back",
+			name:         "vcs stamped pseudo-version falls back",
+			buildInfoOK:  true,
+			buildVersion: "v0.2.0-0.20260823093759-0a06056e3945",
+			buildSettings: []debug.BuildSetting{
+				{Key: "vcs.revision", Value: "0a06056e3945"},
+				{Key: "vcs.modified", Value: "false"},
+			},
+			want: "devel",
+		},
+		{
+			name:          "pseudo-version with clean vcs falls back",
 			buildInfoOK:   true,
 			buildVersion:  "v0.2.0-0.20260823093759-0a06056e3945",
-			buildSettings: []debug.BuildSetting{{Key: "vcs.revision", Value: "0a06056e3945"}},
+			buildSettings: []debug.BuildSetting{{Key: "vcs.modified", Value: "false"}},
 			want:          "devel",
 		},
 		{
