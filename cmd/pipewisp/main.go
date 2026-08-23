@@ -29,7 +29,7 @@ func run(in io.Reader, out io.Writer, diagnostics io.Writer) int {
 }
 
 func runWithOptions(opts options, in io.Reader, out io.Writer, diagnostics io.Writer) int {
-	state := newLifecycleState()
+	state := newLifecycleStateWithHookPolicy(opts.ignoreHookErrors)
 	countedOut := state.writer(out)
 
 	// Subscribe before on so a signal during activation is retained for final status selection.

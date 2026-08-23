@@ -29,6 +29,7 @@ type hookContext struct {
 	reason               string
 	bytes                int64
 	durationMilliseconds int64
+	ignoreErrors         bool
 }
 
 func runHook(name, command string, diagnostics io.Writer) error {
@@ -46,6 +47,10 @@ func runHookWithContext(name, command string, context hookContext, diagnostics i
 func runHookWithContextAndTracker(name, command string, context hookContext, diagnostics io.Writer, timeout time.Duration, tracker *signalTracker) error {
 	if err := executeHookWithControl(command, context, diagnostics, timeout, tracker); err != nil {
 		reportDiagnostic(diagnostics, fmt.Errorf("%s hook failed: %w", name, err))
+		var signalErr *hookSignalError
+		if context.ignoreErrors && !errors.As(err, &signalErr) {
+			return nil
+		}
 		return err
 	}
 	return nil

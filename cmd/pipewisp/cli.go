@@ -10,20 +10,21 @@ import (
 )
 
 type options struct {
-	on             string
-	onSet          bool
-	onFirstData    string
-	onFirstDataSet bool
-	off            string
-	offSet         bool
-	idle           time.Duration
-	idleSet        bool
-	hookTimeout    time.Duration
-	hookTimeoutSet bool
-	onIdle         string
-	onIdleSet      bool
-	onResume       string
-	onResumeSet    bool
+	on               string
+	onSet            bool
+	onFirstData      string
+	onFirstDataSet   bool
+	off              string
+	offSet           bool
+	idle             time.Duration
+	idleSet          bool
+	hookTimeout      time.Duration
+	hookTimeoutSet   bool
+	ignoreHookErrors bool
+	onIdle           string
+	onIdleSet        bool
+	onResume         string
+	onResumeSet      bool
 }
 
 func parseArgs(args []string) (options, bool, error) {
@@ -113,6 +114,11 @@ func parseArgs(args []string) (options, bool, error) {
 				return options{}, false, err
 			}
 			opts.hookTimeout, opts.hookTimeoutSet = value, true
+		case arg == "--ignore-hook-errors":
+			if opts.ignoreHookErrors {
+				return options{}, false, fmt.Errorf("--ignore-hook-errors specified more than once")
+			}
+			opts.ignoreHookErrors = true
 		case arg == "--idle":
 			if opts.idleSet {
 				return options{}, false, fmt.Errorf("--idle specified more than once")
@@ -242,5 +248,5 @@ func validateCommand(command, option string) (string, error) {
 }
 
 func printUsage(out io.Writer) {
-	_, _ = out.Write([]byte("Usage: pipewisp [--on COMMAND] [--on-first-data COMMAND] [--off COMMAND] [--idle DURATION] [--on-idle COMMAND] [--on-resume COMMAND] [--hook-timeout DURATION]\n"))
+	_, _ = out.Write([]byte("Usage: pipewisp [--on COMMAND] [--on-first-data COMMAND] [--off COMMAND] [--idle DURATION] [--on-idle COMMAND] [--on-resume COMMAND] [--hook-timeout DURATION] [--ignore-hook-errors]\n"))
 }

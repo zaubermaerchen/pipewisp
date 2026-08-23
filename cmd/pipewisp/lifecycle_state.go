@@ -1,6 +1,6 @@
 package main
 
-// This file tracks the lifecycle start time and successfully written bytes.
+// This file tracks the lifecycle start time, successfully written bytes, and hook error policy.
 
 import (
 	"io"
@@ -9,12 +9,20 @@ import (
 )
 
 type lifecycleState struct {
-	started time.Time
-	bytes   atomic.Int64
+	started          time.Time
+	bytes            atomic.Int64
+	ignoreHookErrors bool
 }
 
 func newLifecycleState() *lifecycleState {
-	return &lifecycleState{started: time.Now()}
+	return newLifecycleStateWithHookPolicy(false)
+}
+
+func newLifecycleStateWithHookPolicy(ignoreHookErrors bool) *lifecycleState {
+	return &lifecycleState{
+		started:          time.Now(),
+		ignoreHookErrors: ignoreHookErrors,
+	}
 }
 
 func (state *lifecycleState) snapshot(event, reason string) hookContext {
@@ -29,6 +37,7 @@ func (state *lifecycleState) snapshot(event, reason string) hookContext {
 		reason:               reason,
 		bytes:                state.bytes.Load(),
 		durationMilliseconds: durationMilliseconds,
+		ignoreErrors:         state.ignoreHookErrors,
 	}
 }
 
