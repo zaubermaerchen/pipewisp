@@ -21,6 +21,10 @@ func runCLI(args []string, in io.Reader, out io.Writer, diagnostics io.Writer) i
 		printUsage(out)
 		return 0
 	}
+	if opts.showVersion {
+		printVersion(out)
+		return 0
+	}
 	return runWithOptions(opts, in, out, diagnostics)
 }
 

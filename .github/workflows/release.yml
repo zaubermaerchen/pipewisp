@@ -121,10 +121,19 @@ jobs:
             binary+=.exe
           fi
           CGO_ENABLED=0 GOOS="$TARGET_OS" GOARCH="$TARGET_ARCH" \
-            go build -trimpath -ldflags='-s -w' \
+            go build -trimpath -ldflags="-s -w -X main.version=${VERSION}" \
               -o "$staging/$package_name/$binary" ./cmd/pipewisp
           cp LICENSE README.md "$staging/$package_name/"
           test -s "$staging/$package_name/$binary"
+
+          if [[ "$TARGET_OS" == linux && "$TARGET_ARCH" == amd64 ]]; then
+            actual_version="$("$staging/$package_name/$binary" --version)"
+            expected_version="pipewisp $VERSION"
+            if [[ "$actual_version" != "$expected_version" ]]; then
+              echo "version output mismatch: got $actual_version, want $expected_version" >&2
+              exit 1
+            fi
+          fi
 
           if [[ "$TARGET_OS" == windows ]]; then
             archive="${package_name}.zip"

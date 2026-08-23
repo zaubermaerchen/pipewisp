@@ -97,6 +97,19 @@ func TestParseHelp(t *testing.T) {
 	}
 }
 
+func TestParseVersion(t *testing.T) {
+	got, help, err := parseArgs([]string{"--version"})
+	if err != nil {
+		t.Fatalf("parseArgs() error = %v", err)
+	}
+	if help {
+		t.Fatal("parseArgs() help = true, want false")
+	}
+	if !got.showVersion {
+		t.Fatalf("parseArgs() showVersion = false, want true: %#v", got)
+	}
+}
+
 func TestParseRejectsInvalidArguments(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -232,6 +245,16 @@ func TestParseRejectsInvalidArguments(t *testing.T) {
 			name:    "help with another argument",
 			args:    []string{"--help", "--on", "prepare"},
 			message: "--help cannot be combined",
+		},
+		{
+			name:    "version with another argument",
+			args:    []string{"--version", "--on", "prepare"},
+			message: "--version cannot be combined",
+		},
+		{
+			name:    "short version option is unsupported",
+			args:    []string{"-v"},
+			message: "unknown option -v",
 		},
 	}
 
