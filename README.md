@@ -236,9 +236,15 @@ EPIPE copy result instead of terminating the process before cleanup can run.
 EPIPE only describes pipewisp's downstream; it cannot keep a consumer alive,
 reopen a closed pipe, or determine how an upstream producer reacts.
 
-## Scope and cleanup limits
+## Operational limits
 
 The interface has no configuration files, multiple hooks of the same lifecycle
 kind, verbose mode, or general hook-policy framework. Cleanup cannot run after
 SIGKILL, an unrecoverable process crash, or power loss, because those
 conditions do not allow a user-space hook to execute.
+
+## Design principles
+
+For the rationale behind pipewisp's intentionally small, composable core, see
+the [Design Principles](https://github.com/zaubermaerchen/pipewisp/wiki/Design-Principles)
+Wiki page.
