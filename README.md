@@ -128,6 +128,9 @@ below.
 `--version` prints the build version (or `devel`) and exits without reading
 stdin or running hooks; it must be used alone. `-v` is not supported.
 
+Pull-request release artifacts use `snapshot`, so their output may be
+`pipewisp snapshot`.
+
 ```sh
 pipewisp --version
 producer | pipewisp
