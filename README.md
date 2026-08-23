@@ -49,13 +49,16 @@ if ($actual -ne $expected) { throw "checksum mismatch: $archive" }
 ## Usage
 
 ```text
-pipewisp [--on COMMAND] [--on-first-data COMMAND] [--off COMMAND] [--idle DURATION] [--on-idle COMMAND] [--on-resume COMMAND]
+pipewisp [--on COMMAND] [--on-first-data COMMAND] [--off COMMAND] [--idle DURATION] [--on-idle COMMAND] [--on-resume COMMAND] [--hook-timeout DURATION]
 ```
 
 Each hook option is optional and may be specified at most once. `--idle` is a
 Go duration such as `250ms` or `2s`; it must be positive and must be used with
 at least one of `--on-idle` and `--on-resume`. The separated and equals forms
-are supported:
+are supported for every option. `--hook-timeout` is a positive Go duration
+that bounds each lifecycle hook invocation (`--on`, `--on-first-data`,
+`--on-idle`, `--on-resume`, and `--off`). A new timeout window starts for every
+invocation; when the option is omitted, hooks have no time limit.
 
 ```sh
 producer | pipewisp
@@ -65,6 +68,7 @@ producer | pipewisp --on='prepare' --off='cleanup'
 producer | pipewisp --on='prepare' --on-first-data='observe' --off='cleanup'
 producer | pipewisp --idle 2s --on-idle 'printf "idle\\n"' --on-resume 'printf "active\\n"'
 producer | pipewisp --idle=250ms --on-idle='notify-idle'
+producer | pipewisp --hook-timeout=5s --on 'prepare' --off 'cleanup'
 pipewisp --help
 ```
 
@@ -99,7 +103,12 @@ as a resume transition. EOF and signals do not trigger resume.
 On Unix, hooks run as `/bin/sh -c COMMAND`. On Windows, they run as
 `cmd.exe /C COMMAND`. Hook stdin is isolated from the passthrough stream: it
 is connected to an empty/null input. Hook stdout and stderr are both sent to
-pipewisp's stderr; stdout contains passthrough data only.
+pipewisp's stderr; stdout contains passthrough data only. If a hook exceeds
+`--hook-timeout`, pipewisp terminates the directly-started hook process, waits
+for it to be reaped, reports the timeout on stderr, and applies the normal
+hook-failure policy. A handled SIGINT or SIGTERM stops a running hook
+immediately instead of waiting for its timeout; the signal status remains the
+final status and the `off` context keeps the original completion reason.
 
 Hooks inherit pipewisp's environment. For each hook, pipewisp replaces the
 following variables with a lifecycle snapshot (taken immediately before the
@@ -147,6 +156,6 @@ reopen a closed pipe, or determine how an upstream producer reacts.
 ## Scope and cleanup limits
 
 The interface has no configuration files, multiple hooks of the same lifecycle
-kind, hook timeouts, verbose mode, or option to ignore hook failures. Cleanup
+kind, verbose mode, or option to ignore hook failures. Cleanup
 cannot run after SIGKILL, an unrecoverable process crash, or power loss,
 because those conditions do not allow a user-space hook to execute.

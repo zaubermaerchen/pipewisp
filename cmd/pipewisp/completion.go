@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"os"
+	"sync"
 )
 
 type completion struct {
@@ -17,8 +18,11 @@ type completion struct {
 }
 
 type signalTracker struct {
-	signals <-chan os.Signal
-	first   os.Signal
+	signals    <-chan os.Signal
+	first      os.Signal
+	mu         sync.Mutex
+	notify     chan struct{}
+	generation uint64
 }
 
 type completionKind uint8
@@ -39,29 +43,64 @@ func (tracker *signalTracker) poll() os.Signal {
 		select {
 		case sig := <-tracker.signals:
 			// Keep the first signal because later signals cannot change the shell-visible status.
-			if tracker.first == nil && sig != nil {
-				tracker.first = sig
-			}
+			tracker.remember(sig)
 		default:
-			return tracker.first
+			return tracker.firstSignal()
 		}
 	}
 }
 
+func (tracker *signalTracker) remember(sig os.Signal) {
+	if sig == nil {
+		return
+	}
+	tracker.mu.Lock()
+	if tracker.first == nil {
+		tracker.first = sig
+	}
+	if tracker.notify == nil {
+		tracker.notify = make(chan struct{})
+	}
+	previous := tracker.notify
+	tracker.notify = make(chan struct{})
+	tracker.generation++
+	tracker.mu.Unlock()
+	close(previous)
+}
+
+func (tracker *signalTracker) firstSignal() os.Signal {
+	tracker.mu.Lock()
+	defer tracker.mu.Unlock()
+	return tracker.first
+}
+
+func (tracker *signalTracker) beginHookObservation() (uint64, chan struct{}) {
+	tracker.mu.Lock()
+	defer tracker.mu.Unlock()
+	if tracker.notify == nil {
+		tracker.notify = make(chan struct{})
+	}
+	return tracker.generation, tracker.notify
+}
+
+func (tracker *signalTracker) generationChanged(generation uint64) bool {
+	tracker.mu.Lock()
+	defer tracker.mu.Unlock()
+	return tracker.generation != generation
+}
+
 func (tracker *signalTracker) waitForCopy(copyDone <-chan error) completion {
 	if tracker.poll() != nil {
-		return completion{signal: tracker.first}
+		return completion{signal: tracker.firstSignal()}
 	}
 	select {
 	case sig := <-tracker.signals:
-		if tracker.first == nil && sig != nil {
-			tracker.first = sig
-		}
-		return completion{signal: tracker.first}
+		tracker.remember(sig)
+		return completion{signal: tracker.firstSignal()}
 	case err := <-copyDone:
 		// A signal delivered with copy completion must win even when both are ready.
 		tracker.poll()
-		return completion{copyErr: err, signal: tracker.first}
+		return completion{copyErr: err, signal: tracker.firstSignal()}
 	}
 }
 
