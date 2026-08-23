@@ -101,6 +101,26 @@ On Unix, hooks run as `/bin/sh -c COMMAND`. On Windows, they run as
 is connected to an empty/null input. Hook stdout and stderr are both sent to
 pipewisp's stderr; stdout contains passthrough data only.
 
+Hooks inherit pipewisp's environment. For each hook, pipewisp replaces the
+following variables with a lifecycle snapshot (taken immediately before the
+hook, except that `off` is frozen when stream completion is determined):
+
+| Variable | Value |
+| --- | --- |
+| `PIPEWISP_EVENT` | `on`, `first-data`, `idle`, `resume`, or `off` |
+| `PIPEWISP_BYTES` | Cumulative bytes successfully written to passthrough stdout, including partial writes. |
+| `PIPEWISP_DURATION_MILLISECONDS` | Elapsed whole milliseconds since the lifecycle started. The `on` hook always receives `0`. |
+| `PIPEWISP_REASON` | Set only for `off`: `eof`, `signal`, `broken-pipe`, or `io-error`. It is omitted for other hooks and when no `off` reason applies. |
+
+Unknown `PIPEWISP_*` variables and ordinary variables such as `PATH` are
+preserved from the parent environment. Hook execution time is included in
+later snapshots, but never changes a context already delivered to a running
+hook. The `off` context is snapshotted when the stream completion outcome is
+determined, before completion diagnostics and cleanup begin. A signal arriving
+later can change pipewisp's final exit status, but does not change the `off`
+event, reason, byte count, or duration; cleanup time is not added to that
+snapshot.
+
 All lifecycle hook options execute their command through a shell. Do not pass
 untrusted or unsanitized command strings: shell metacharacters have their
 normal platform-specific meaning.
