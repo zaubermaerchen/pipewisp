@@ -29,7 +29,6 @@ type hookContext struct {
 	reason               string
 	bytes                int64
 	durationMilliseconds int64
-	ignoreErrors         bool
 }
 
 func runHook(name, command string, diagnostics io.Writer) error {
@@ -41,14 +40,14 @@ func runHook(name, command string, diagnostics io.Writer) error {
 }
 
 func runHookWithContext(name, command string, context hookContext, diagnostics io.Writer) error {
-	return runHookWithContextAndTracker(name, command, context, diagnostics, 0, nil)
+	return runHookWithContextAndTracker(name, command, context, diagnostics, 0, nil, false)
 }
 
-func runHookWithContextAndTracker(name, command string, context hookContext, diagnostics io.Writer, timeout time.Duration, tracker *signalTracker) error {
+func runHookWithContextAndTracker(name, command string, context hookContext, diagnostics io.Writer, timeout time.Duration, tracker *signalTracker, ignoreErrors bool) error {
 	if err := executeHookWithControl(command, context, diagnostics, timeout, tracker); err != nil {
 		reportDiagnostic(diagnostics, fmt.Errorf("%s hook failed: %w", name, err))
 		var signalErr *hookSignalError
-		if context.ignoreErrors && !errors.As(err, &signalErr) {
+		if ignoreErrors && !errors.As(err, &signalErr) {
 			return nil
 		}
 		return err
