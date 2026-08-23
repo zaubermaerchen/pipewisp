@@ -110,6 +110,7 @@ Exit status sections remain authoritative for exact behavior and precedence.
 ## Usage
 
 ```text
+pipewisp --version
 pipewisp [--on COMMAND] [--on-first-data COMMAND] [--off COMMAND] [--idle DURATION] [--on-idle COMMAND] [--on-resume COMMAND] [--hook-timeout DURATION] [--ignore-hook-errors]
 ```
 
@@ -124,7 +125,14 @@ time limit. `--ignore-hook-errors` is a value-less opt-in flag; without it,
 hook failures remain strict and affect processing or final status as described
 below.
 
+`--version` prints the build version (or `devel`) and exits without reading
+stdin or running hooks; it must be used alone. `-v` is not supported.
+
+Pull-request release artifacts use `snapshot`, so their output may be
+`pipewisp snapshot`.
+
 ```sh
+pipewisp --version
 producer | pipewisp
 producer | pipewisp --on 'printf "started\\n"' --off 'printf "stopped\\n"'
 producer | pipewisp --on-first-data 'printf "observed\\n"'

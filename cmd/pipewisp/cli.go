@@ -10,6 +10,7 @@ import (
 )
 
 type options struct {
+	showVersion      bool
 	on               string
 	onSet            bool
 	onFirstData      string
@@ -33,6 +34,11 @@ func parseArgs(args []string) (options, bool, error) {
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
 		switch {
+		case arg == "--version":
+			if len(args) != 1 {
+				return options{}, false, fmt.Errorf("--version cannot be combined with other arguments")
+			}
+			return options{showVersion: true}, false, nil
 		case arg == "-h" || arg == "--help":
 			if len(args) != 1 {
 				return options{}, false, fmt.Errorf("%s cannot be combined with other arguments", arg)
@@ -248,5 +254,5 @@ func validateCommand(command, option string) (string, error) {
 }
 
 func printUsage(out io.Writer) {
-	_, _ = out.Write([]byte("Usage: pipewisp [--on COMMAND] [--on-first-data COMMAND] [--off COMMAND] [--idle DURATION] [--on-idle COMMAND] [--on-resume COMMAND] [--hook-timeout DURATION] [--ignore-hook-errors]\n"))
+	_, _ = out.Write([]byte("Usage: pipewisp [--on COMMAND] [--on-first-data COMMAND] [--off COMMAND] [--idle DURATION] [--on-idle COMMAND] [--on-resume COMMAND] [--hook-timeout DURATION] [--ignore-hook-errors]\n       pipewisp --version\n"))
 }
