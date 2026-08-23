@@ -3,12 +3,15 @@ package main
 // This file executes lifecycle hooks with isolated input and diagnostic output.
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"runtime"
 	"strconv"
 	"strings"
+	"time"
 )
 
 const (
@@ -37,7 +40,11 @@ func runHook(name, command string, diagnostics io.Writer) error {
 }
 
 func runHookWithContext(name, command string, context hookContext, diagnostics io.Writer) error {
-	if err := executeHook(command, context, diagnostics); err != nil {
+	return runHookWithContextAndTracker(name, command, context, diagnostics, 0, nil)
+}
+
+func runHookWithContextAndTracker(name, command string, context hookContext, diagnostics io.Writer, timeout time.Duration, tracker *signalTracker) error {
+	if err := executeHookWithControl(command, context, diagnostics, timeout, tracker); err != nil {
 		reportDiagnostic(diagnostics, fmt.Errorf("%s hook failed: %w", name, err))
 		return err
 	}
@@ -45,13 +52,131 @@ func runHookWithContext(name, command string, context hookContext, diagnostics i
 }
 
 func executeHook(command string, context hookContext, diagnostics io.Writer) error {
+	return executeHookWithControl(command, context, diagnostics, 0, nil)
+}
+
+type hookTimeoutError struct {
+	duration time.Duration
+}
+
+func (err *hookTimeoutError) Error() string {
+	return fmt.Sprintf("hook timed out after %s", err.duration)
+}
+
+type hookSignalError struct {
+	signal  os.Signal
+	waitErr error
+}
+
+func (err *hookSignalError) Error() string {
+	if err.waitErr == nil {
+		return fmt.Sprintf("hook interrupted by %v", err.signal)
+	}
+	return fmt.Sprintf("hook interrupted by %v: %v", err.signal, err.waitErr)
+}
+
+func (err *hookSignalError) Unwrap() error {
+	return err.waitErr
+}
+
+func executeHookWithControl(command string, context hookContext, diagnostics io.Writer, timeout time.Duration, tracker *signalTracker) error {
 	hook := newShellCommand(command)
 	// Hooks must not consume bytes that belong to the passthrough stream.
 	hook.Stdin = nil
 	hook.Stdout = diagnostics
 	hook.Stderr = diagnostics
+	// A shell can leave descendants holding inherited output descriptors after
+	// it exits. Bound only that post-exit drain; normal output still drains fully
+	// when the descriptors close promptly.
+	hook.WaitDelay = hookWaitDelay
 	hook.Env = hookEnvironment(context)
-	return hook.Run()
+	if tracker != nil {
+		// A signal accepted before this invocation belongs to the surrounding
+		// lifecycle outcome, not to a hook that has not started yet. Drain it
+		// before taking this invocation's observation point.
+		tracker.poll()
+	}
+	var signalC <-chan os.Signal
+	var signalDone <-chan struct{}
+	var signalGeneration uint64
+	if tracker != nil {
+		signalGeneration, signalDone = tracker.beginHookObservation()
+		signalC = tracker.signals
+	}
+	if err := hook.Start(); err != nil {
+		return err
+	}
+	waitDone := make(chan error, 1)
+	go func() {
+		// Cmd.Wait owns the output-copy goroutines and uses WaitDelay to bound
+		// any descendant-held descriptors while still reaping the direct process.
+		waitDone <- hook.Wait()
+	}()
+
+	var timeoutC <-chan time.Time
+	var timer *time.Timer
+	if timeout > 0 {
+		timer = time.NewTimer(timeout)
+		timeoutC = timer.C
+		defer timer.Stop()
+	}
+
+	for {
+		select {
+		case err := <-waitDone:
+			return normalizeHookWaitError(err)
+		case <-timeoutC:
+			if tracker != nil {
+				// A signal and the timer may become ready together. Signal status
+				// takes precedence when the signal was accepted during this hook.
+				tracker.poll()
+				if tracker.generationChanged(signalGeneration) {
+					killErr := hook.Process.Kill()
+					waitErr := <-waitDone
+					if errors.Is(killErr, os.ErrProcessDone) {
+						return normalizeHookWaitError(waitErr)
+					}
+					return &hookSignalError{signal: tracker.firstSignal(), waitErr: waitErr}
+				}
+			}
+			killErr := hook.Process.Kill()
+			waitErr := <-waitDone
+			if errors.Is(killErr, os.ErrProcessDone) {
+				return normalizeHookWaitError(waitErr)
+			}
+			return &hookTimeoutError{duration: timeout}
+		case sig := <-signalC:
+			tracker.remember(sig)
+			if sig == nil {
+				continue
+			}
+			killErr := hook.Process.Kill()
+			waitErr := <-waitDone
+			if errors.Is(killErr, os.ErrProcessDone) {
+				return normalizeHookWaitError(waitErr)
+			}
+			return &hookSignalError{signal: tracker.firstSignal(), waitErr: waitErr}
+		case <-signalDone:
+			if !tracker.generationChanged(signalGeneration) {
+				continue
+			}
+			killErr := hook.Process.Kill()
+			waitErr := <-waitDone
+			if errors.Is(killErr, os.ErrProcessDone) {
+				return normalizeHookWaitError(waitErr)
+			}
+			return &hookSignalError{signal: tracker.firstSignal(), waitErr: waitErr}
+		}
+	}
+}
+
+const hookWaitDelay = 250 * time.Millisecond
+
+func normalizeHookWaitError(err error) error {
+	if errors.Is(err, exec.ErrWaitDelay) {
+		return nil
+	}
+	return err
 }
 
 func lifecycleEventForHookName(name string) string {

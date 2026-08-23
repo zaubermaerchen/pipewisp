@@ -115,7 +115,10 @@ func TestIdleSignalDuringFirstDataHookWaitsBeforeOff(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("pipe writer did not finish")
 	}
-	if got, want := readMarker(t, done)+readMarker(t, events), "xfirstoff"; got != want {
+	if _, err := os.Stat(done); !os.IsNotExist(err) {
+		t.Fatalf("first-data completion marker exists after signal: err = %v", err)
+	}
+	if got, want := readMarker(t, events), "off"; got != want {
 		t.Fatalf("first-data/off markers = %q, want %q", got, want)
 	}
 }

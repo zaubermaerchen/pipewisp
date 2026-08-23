@@ -18,6 +18,8 @@ type options struct {
 	offSet         bool
 	idle           time.Duration
 	idleSet        bool
+	hookTimeout    time.Duration
+	hookTimeoutSet bool
 	onIdle         string
 	onIdleSet      bool
 	onResume       string
@@ -92,6 +94,25 @@ func parseArgs(args []string) (options, bool, error) {
 				return options{}, false, err
 			}
 			opts.off, opts.offSet = value, true
+		case arg == "--hook-timeout":
+			if opts.hookTimeoutSet {
+				return options{}, false, fmt.Errorf("--hook-timeout specified more than once")
+			}
+			value, next, err := parseSeparateDuration(args, i, "--hook-timeout")
+			if err != nil {
+				return options{}, false, err
+			}
+			opts.hookTimeout, opts.hookTimeoutSet = value, true
+			i = next
+		case strings.HasPrefix(arg, "--hook-timeout="):
+			if opts.hookTimeoutSet {
+				return options{}, false, fmt.Errorf("--hook-timeout specified more than once")
+			}
+			value, err := parseDuration(arg[len("--hook-timeout="):], "--hook-timeout")
+			if err != nil {
+				return options{}, false, err
+			}
+			opts.hookTimeout, opts.hookTimeoutSet = value, true
 		case arg == "--idle":
 			if opts.idleSet {
 				return options{}, false, fmt.Errorf("--idle specified more than once")
@@ -159,6 +180,9 @@ func parseArgs(args []string) (options, bool, error) {
 	if opts.idleSet && opts.idle <= 0 {
 		return options{}, false, fmt.Errorf("--idle must be greater than zero")
 	}
+	if opts.hookTimeoutSet && opts.hookTimeout <= 0 {
+		return options{}, false, fmt.Errorf("--hook-timeout must be greater than zero")
+	}
 	if opts.onIdleSet && !opts.idleSet {
 		return options{}, false, fmt.Errorf("--on-idle requires --idle")
 	}
@@ -218,5 +242,5 @@ func validateCommand(command, option string) (string, error) {
 }
 
 func printUsage(out io.Writer) {
-	_, _ = out.Write([]byte("Usage: pipewisp [--on COMMAND] [--on-first-data COMMAND] [--off COMMAND] [--idle DURATION] [--on-idle COMMAND] [--on-resume COMMAND]\n"))
+	_, _ = out.Write([]byte("Usage: pipewisp [--on COMMAND] [--on-first-data COMMAND] [--off COMMAND] [--idle DURATION] [--on-idle COMMAND] [--on-resume COMMAND] [--hook-timeout DURATION]\n"))
 }

@@ -209,7 +209,7 @@ func runIdleCopyWithState(opts options, in io.Reader, out io.Writer, diagnostics
 				continue
 			}
 			runner.rememberSignal(sig)
-			runner.abortForSignal(tracker.first)
+			runner.abortForSignal(tracker.firstSignal())
 			return runner.done
 		case <-runner.pump.readStarted:
 			if !runner.handleReadStarted() {
@@ -288,7 +288,7 @@ func (runner *idleCopyRunner) handleRead(result idleReadResult) bool {
 					runner.abortForSignal(sig)
 					return false
 				}
-				if err := runHookWithContext("on-resume", runner.opts.onResume, runner.state.snapshot("resume", ""), runner.diagnostics); err != nil {
+				if err := runHookWithContextAndTracker("on-resume", runner.opts.onResume, runner.state.snapshot("resume", ""), runner.diagnostics, runner.opts.hookTimeout, runner.tracker); err != nil {
 					runner.done.resumeErr = err
 				}
 				if sig := runner.pollSignal(); sig != nil {
@@ -356,7 +356,7 @@ func (runner *idleCopyRunner) handleFirstData() bool {
 		runner.abortForSignal(sig)
 		return false
 	}
-	if err := runHookWithContext("on-first-data", runner.opts.onFirstData, runner.state.snapshot("first-data", ""), runner.diagnostics); err != nil {
+	if err := runHookWithContextAndTracker("on-first-data", runner.opts.onFirstData, runner.state.snapshot("first-data", ""), runner.diagnostics, runner.opts.hookTimeout, runner.tracker); err != nil {
 		runner.done.firstDataHookFailed = true
 	}
 	if sig := runner.pollSignal(); sig != nil {
@@ -378,7 +378,7 @@ func (runner *idleCopyRunner) handleIdle() bool {
 			runner.abortForSignal(sig)
 			return false
 		}
-		if err := runHookWithContext("on-idle", runner.opts.onIdle, runner.state.snapshot("idle", ""), runner.diagnostics); err != nil {
+		if err := runHookWithContextAndTracker("on-idle", runner.opts.onIdle, runner.state.snapshot("idle", ""), runner.diagnostics, runner.opts.hookTimeout, runner.tracker); err != nil {
 			runner.done.idleErr = err
 		}
 		if sig := runner.pollSignal(); sig != nil {
@@ -426,9 +426,7 @@ func (runner *idleCopyRunner) stopAfterCopyError() {
 }
 
 func (runner *idleCopyRunner) rememberSignal(sig os.Signal) {
-	if runner.tracker.first == nil && sig != nil {
-		runner.tracker.first = sig
-	}
+	runner.tracker.remember(sig)
 }
 
 func (runner *idleCopyRunner) pollSignal() os.Signal {

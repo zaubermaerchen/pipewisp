@@ -132,7 +132,7 @@ func TestSubprocessSignalDuringOnSkipsCopy(t *testing.T) {
 			onCommand := "printf started > " + unixQuote(ready) + "; sleep 1; printf done > " + unixQuote(done)
 			offCommand := "printf x >> " + unixQuote(offMarker)
 
-			cmd := exec.Command(binary, "--on", onCommand, "--off", offCommand)
+			cmd := exec.Command(binary, "--hook-timeout", "5s", "--on", onCommand, "--off", offCommand)
 			var stdout, stderr bytes.Buffer
 			cmd.Stdout = &stdout
 			cmd.Stderr = &stderr
@@ -141,6 +141,7 @@ func TestSubprocessSignalDuringOnSkipsCopy(t *testing.T) {
 			}
 
 			waitForMarker(t, ready)
+			signaledAt := time.Now()
 			if err := cmd.Process.Signal(tt.signal); err != nil {
 				t.Fatalf("Signal(%v) error = %v", tt.signal, err)
 			}
@@ -148,11 +149,17 @@ func TestSubprocessSignalDuringOnSkipsCopy(t *testing.T) {
 			if got := processExitCode(t, cmd); got != tt.status {
 				t.Fatalf("process exit code = %d, want %d; stderr = %q", got, tt.status, stderr.String())
 			}
+			if elapsed := time.Since(signaledAt); elapsed >= 2*time.Second {
+				t.Fatalf("signal cleanup took %s, want less than configured hook timeout", elapsed)
+			}
+			if strings.Contains(stderr.String(), "timed out") {
+				t.Fatalf("stderr = %q, signal interruption must not be reported as timeout", stderr.String())
+			}
 			if got, want := stdout.String(), ""; got != want {
 				t.Fatalf("stdout = %q, want copy skipped", got)
 			}
-			if got, want := readMarker(t, done), "done"; got != want {
-				t.Fatalf("on completion marker = %q, want %q", got, want)
+			if _, err := os.Stat(done); !os.IsNotExist(err) {
+				t.Fatalf("on completion marker exists after signal: err = %v", err)
 			}
 			if got, want := readMarker(t, offMarker), "x"; got != want {
 				t.Fatalf("off marker = %q, want exactly one invocation %q", got, want)
@@ -161,7 +168,7 @@ func TestSubprocessSignalDuringOnSkipsCopy(t *testing.T) {
 	}
 }
 
-func TestSubprocessSignalDuringOnFailureSkipsOff(t *testing.T) {
+func TestSubprocessSignalDuringOnFailureRunsOffOnce(t *testing.T) {
 	tests := []struct {
 		name   string
 		signal os.Signal
@@ -195,8 +202,8 @@ func TestSubprocessSignalDuringOnFailureSkipsOff(t *testing.T) {
 			if got := processExitCode(t, cmd); got != tt.status {
 				t.Fatalf("process exit code = %d, want %d; stderr = %q", got, tt.status, stderr.String())
 			}
-			if _, err := os.Stat(offMarker); !os.IsNotExist(err) {
-				t.Fatalf("off marker exists after on failure: err = %v", err)
+			if got, want := readMarker(t, offMarker), "x"; got != want {
+				t.Fatalf("off marker = %q, want exactly one invocation %q", got, want)
 			}
 		})
 	}
@@ -235,7 +242,10 @@ func TestSubprocessSignalDuringFirstDataHookWaitsBeforeOff(t *testing.T) {
 	if got := processExitCode(t, cmd); got != 143 {
 		t.Fatalf("process exit code = %d, want 143; stdout = %q; stderr = %q", got, stdout.String(), stderr.String())
 	}
-	if got, want := readMarker(t, done)+readMarker(t, events), "donefirstoff"; got != want {
+	if _, err := os.Stat(done); !os.IsNotExist(err) {
+		t.Fatalf("first-data completion marker exists after signal: err = %v", err)
+	}
+	if got, want := readMarker(t, events), "off"; got != want {
 		t.Fatalf("first-data/off markers = %q, want %q", got, want)
 	}
 }
@@ -274,10 +284,38 @@ func TestSubprocessSignalDuringOffAfterEOF(t *testing.T) {
 			if got := processExitCode(t, cmd); got != tt.status {
 				t.Fatalf("process exit code = %d, want %d; stderr = %q", got, tt.status, stderr.String())
 			}
-			if got, want := readMarker(t, done), "done"; got != want {
-				t.Fatalf("off completion marker = %q, want %q", got, want)
+			if _, err := os.Stat(done); !os.IsNotExist(err) {
+				t.Fatalf("off completion marker exists after signal: err = %v", err)
 			}
 		})
+	}
+}
+
+func TestSubprocessOffTimeoutPreservesEOFReason(t *testing.T) {
+	binary := buildPipewispBinary(t)
+	directory := t.TempDir()
+	reasonMarker := filepath.Join(directory, "reason.marker")
+	offCommand := "printf '%s' \"$PIPEWISP_REASON\" > " + unixQuote(reasonMarker) + "; sleep 1"
+
+	cmd := exec.Command(binary, "--hook-timeout", "20ms", "--off", offCommand)
+	cmd.Stdin = strings.NewReader("")
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	startedAt := time.Now()
+	if got := processExitCode(t, cmd); got != 1 {
+		t.Fatalf("process exit code = %d, want 1; stderr = %q", got, stderr.String())
+	}
+	if elapsed := time.Since(startedAt); elapsed >= 2*time.Second {
+		t.Fatalf("timed-out off hook took %s, want less than 2s", elapsed)
+	}
+	if got, want := readMarker(t, reasonMarker), "eof"; got != want {
+		t.Fatalf("off reason marker = %q, want %q", got, want)
+	}
+	if got := stderr.String(); !strings.Contains(got, "off hook failed") || !strings.Contains(got, "timed out") {
+		t.Fatalf("stderr = %q, want off timeout diagnostic", got)
 	}
 }
 

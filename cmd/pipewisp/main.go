@@ -36,18 +36,21 @@ func runWithOptions(opts options, in io.Reader, out io.Writer, diagnostics io.Wr
 	tracker, stopSignals := subscribePassthroughSignals()
 	defer stopSignals()
 
+	var done completion
 	if opts.onSet {
-		if err := runHookWithContext("on", opts.on, state.snapshot("on", ""), diagnostics); err != nil {
+		if err := runHookWithContextAndTracker("on", opts.on, state.snapshot("on", ""), diagnostics, opts.hookTimeout, tracker); err != nil {
 			if sig := tracker.poll(); sig != nil {
-				return signalExitCode(sig)
+				done = completion{signal: sig}
+			} else {
+				return 1
 			}
-			return 1
 		}
 	}
 
-	var done completion
 	var firstData *firstDataReader
-	if sig := tracker.poll(); sig != nil {
+	if done.signal != nil {
+		// Activation was interrupted; skip copying but still run cleanup.
+	} else if sig := tracker.poll(); sig != nil {
 		// Activation completed under interruption; skip copying but still proceed to optional cleanup.
 		done = completion{signal: sig}
 	} else if opts.idleSet {
@@ -60,7 +63,7 @@ func runWithOptions(opts options, in io.Reader, out io.Writer, diagnostics io.Wr
 				reader:   in,
 				finished: make(chan struct{}),
 				hook: func() error {
-					return runHookWithContext("on-first-data", opts.onFirstData, state.snapshot("first-data", ""), diagnostics)
+					return runHookWithContextAndTracker("on-first-data", opts.onFirstData, state.snapshot("first-data", ""), diagnostics, opts.hookTimeout, tracker)
 				},
 			}
 			input = firstData
@@ -96,7 +99,7 @@ func runWithOptions(opts options, in io.Reader, out io.Writer, diagnostics io.Wr
 	var runOff func() error
 	if opts.offSet {
 		runOff = func() error {
-			return runHookWithContext("off", opts.off, offContext, diagnostics)
+			return runHookWithContextAndTracker("off", opts.off, offContext, diagnostics, opts.hookTimeout, tracker)
 		}
 	}
 	return finishCompletionWithTracker(done, runOff, diagnostics, tracker)

@@ -35,6 +35,16 @@ func TestParseArgs(t *testing.T) {
 			want: options{on: "prepare", onSet: true, onFirstData: "observe", onFirstDataSet: true, off: "cleanup", offSet: true},
 		},
 		{
+			name: "hook timeout separated",
+			args: []string{"--hook-timeout", "250ms"},
+			want: options{hookTimeout: 250 * time.Millisecond, hookTimeoutSet: true},
+		},
+		{
+			name: "hook timeout equals",
+			args: []string{"--hook-timeout=2s"},
+			want: options{hookTimeout: 2 * time.Second, hookTimeoutSet: true},
+		},
+		{
 			name: "all lifecycle options",
 			args: []string{"--on", "prepare", "--on-first-data", "observe", "--off", "cleanup", "--idle", "25ms", "--on-idle", "idle", "--on-resume", "resume"},
 			want: options{
@@ -119,6 +129,16 @@ func TestParseRejectsInvalidArguments(t *testing.T) {
 			message: "--on-first-data specified more than once",
 		},
 		{
+			name:    "duplicate hook timeout separated",
+			args:    []string{"--hook-timeout", "1s", "--hook-timeout", "2s"},
+			message: "--hook-timeout specified more than once",
+		},
+		{
+			name:    "duplicate hook timeout equals",
+			args:    []string{"--hook-timeout=1s", "--hook-timeout=2s"},
+			message: "--hook-timeout specified more than once",
+		},
+		{
 			name:    "missing on value",
 			args:    []string{"--on"},
 			message: "missing value for --on",
@@ -137,6 +157,36 @@ func TestParseRejectsInvalidArguments(t *testing.T) {
 			name:    "missing first-data value before another option",
 			args:    []string{"--on-first-data", "--on", "prepare"},
 			message: "missing value for --on-first-data",
+		},
+		{
+			name:    "missing hook timeout value",
+			args:    []string{"--hook-timeout"},
+			message: "missing value for --hook-timeout",
+		},
+		{
+			name:    "missing hook timeout value before another option",
+			args:    []string{"--hook-timeout", "--on", "prepare"},
+			message: "missing value for --hook-timeout",
+		},
+		{
+			name:    "empty hook timeout equals value",
+			args:    []string{"--hook-timeout="},
+			message: "empty duration for --hook-timeout",
+		},
+		{
+			name:    "invalid hook timeout",
+			args:    []string{"--hook-timeout", "later"},
+			message: "invalid duration for --hook-timeout",
+		},
+		{
+			name:    "zero hook timeout",
+			args:    []string{"--hook-timeout=0s"},
+			message: "--hook-timeout must be greater than zero",
+		},
+		{
+			name:    "negative hook timeout",
+			args:    []string{"--hook-timeout", "-1ms"},
+			message: "--hook-timeout must be greater than zero",
 		},
 		{
 			name:    "empty on equals value",
