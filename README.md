@@ -1,8 +1,36 @@
 # pipewisp
 
+```text
+             ~
+          ~
+       ~
+──────╂────────────────▶
+      │
+   pipewisp
+      ✦
+```
+
+**Pass the stream through. Let lifecycle side effects drift away.**
+
 `pipewisp` passes standard input to standard output byte-for-byte while running
-optional commands at the beginning and end of the stream lifecycle. It is
-intended for inserting synchronous side effects into a Unix or Windows pipe.
+optional commands at stream lifecycle events. It is intended for inserting
+synchronous side effects into a Unix or Windows pipe without transforming the
+stream.
+
+## Concept
+
+```mermaid
+flowchart LR
+    producer[Producer] -->|stdin| pipewisp[pipewisp]
+    pipewisp -->|stdout · unchanged bytes| consumer[Consumer]
+
+    pipewisp -. lifecycle .-> hooks[Hooks]
+    hooks --> effects[Side effects]
+```
+
+The solid path is the data path: stdout contains only the original stream bytes
+in their original order. Hooks branch from lifecycle events and run
+synchronously; their stdout and stderr are both directed to pipewisp's stderr.
 
 ## Install and build
 
@@ -45,6 +73,39 @@ $expected = (Get-Content SHA256SUMS | Where-Object { $_ -like "*  $archive" }).S
 $actual = (Get-FileHash -Algorithm SHA256 $archive).Hash.ToLowerInvariant()
 if ($actual -ne $expected) { throw "checksum mismatch: $archive" }
 ```
+
+## Lifecycle
+
+```mermaid
+flowchart TD
+    start([Start]) --> on["on hook"]
+    on --> input["Wait for input"]
+
+    input --> first["First data"]
+    first --> firsthook["first-data hook"]
+    firsthook --> pass["Write data unchanged"]
+
+    pass --> wait["Wait for more input"]
+    wait -->|data| pass
+    wait -->|idle timeout| idle["idle hook"]
+    idle --> resume["Wait for data"]
+    resume -->|data| resumehook["resume hook"]
+    resumehook --> pass
+
+    input -->|EOF / error / signal| off["off hook"]
+    wait -->|EOF / error / signal| off
+    resume -->|EOF / error / signal| off
+    off --> done([Exit])
+```
+
+Each hook shown is optional, and the idle/resume path is active only when idle
+mode is configured. Hooks run synchronously. Failures are strict by default,
+and `--hook-timeout` starts a fresh timeout window for each invocation. With
+`--ignore-hook-errors`, ordinary hook command failures and hook timeouts are
+still diagnosed but do not by themselves stop an otherwise continuing
+lifecycle or change its final status. Handled signals, stream I/O failures,
+and CLI/configuration errors are outside that policy. The detailed Usage and
+Exit status sections remain authoritative for exact behavior and precedence.
 
 ## Usage
 
