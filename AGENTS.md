@@ -1,5 +1,16 @@
 # Repository Guidelines
 
+## Design constraints
+
+実装判断では [Design Principles](https://github.com/zaubermaerchen/pipewisp/wiki/Design-Principles) に従ってください。詳細な背景と判断理由は Wiki を正とします。
+
+- stdout は元のストリームを byte-for-byte で渡すデータパス専用とし、hook 出力や診断を混ぜません。
+- hook は stream transformation ではなく lifecycle side effect として扱い、原則 synchronous に実行します。
+- 本体機能を増やす前に Unix pipe や複数の pipewisp による composition を優先し、core を汎用 event processor / workflow engine 化しません。
+- 通知、LED、metrics などを組み込まず、外部 hook に汎用の `PIPEWISP_*` context を提供します。
+- lifecycle event は、composition では自然に表現できない stream lifecycle 上の意味がある場合に限って追加します。
+- native multiple-hook support は、shared lifecycle state など composition で表現できない具体的要件が現れるまで追加しません。
+
 ## サブエージェントの利用
 
 軽微でないコード変更では、親エージェントは必ずサブエージェントを利用してください。
