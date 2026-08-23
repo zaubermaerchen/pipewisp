@@ -49,16 +49,19 @@ if ($actual -ne $expected) { throw "checksum mismatch: $archive" }
 ## Usage
 
 ```text
-pipewisp [--on COMMAND] [--on-first-data COMMAND] [--off COMMAND] [--idle DURATION] [--on-idle COMMAND] [--on-resume COMMAND] [--hook-timeout DURATION]
+pipewisp [--on COMMAND] [--on-first-data COMMAND] [--off COMMAND] [--idle DURATION] [--on-idle COMMAND] [--on-resume COMMAND] [--hook-timeout DURATION] [--ignore-hook-errors]
 ```
 
 Each hook option is optional and may be specified at most once. `--idle` is a
 Go duration such as `250ms` or `2s`; it must be positive and must be used with
 at least one of `--on-idle` and `--on-resume`. The separated and equals forms
-are supported for every option. `--hook-timeout` is a positive Go duration
-that bounds each lifecycle hook invocation (`--on`, `--on-first-data`,
-`--on-idle`, `--on-resume`, and `--off`). A new timeout window starts for every
-invocation; when the option is omitted, hooks have no time limit.
+are supported for options that take values. `--hook-timeout` is a positive Go
+duration that bounds each lifecycle hook invocation (`--on`,
+`--on-first-data`, `--on-idle`, `--on-resume`, and `--off`). A new timeout
+window starts for every invocation; when the option is omitted, hooks have no
+time limit. `--ignore-hook-errors` is a value-less opt-in flag; without it,
+hook failures remain strict and affect processing or final status as described
+below.
 
 ```sh
 producer | pipewisp
@@ -69,6 +72,7 @@ producer | pipewisp --on='prepare' --on-first-data='observe' --off='cleanup'
 producer | pipewisp --idle 2s --on-idle 'printf "idle\\n"' --on-resume 'printf "active\\n"'
 producer | pipewisp --idle=250ms --on-idle='notify-idle'
 producer | pipewisp --hook-timeout=5s --on 'prepare' --off 'cleanup'
+producer | pipewisp --ignore-hook-errors --on 'notify-start' --off 'notify-stop'
 pipewisp --help
 ```
 
@@ -110,6 +114,15 @@ hook-failure policy. A handled SIGINT or SIGTERM stops a running hook
 immediately instead of waiting for its timeout; the signal status remains the
 final status and the `off` context keeps the original completion reason.
 
+With `--ignore-hook-errors`, command failures and hook timeouts are still
+reported to stderr but do not by themselves stop an otherwise continuing
+lifecycle or change its final status. The policy applies uniformly to `on`,
+`first-data`, `idle`, `resume`, and `off`. In particular, a failed first-data
+hook still preserves its already-read bytes and then continues reading later
+input, and an ignored `off` failure preserves the result that caused cleanup
+to run. The option does not ignore handled signals, stdin read failures, stdout
+write failures (including broken pipe), or CLI/configuration errors.
+
 Hooks inherit pipewisp's environment. For each hook, pipewisp replaces the
 following variables with a lifecycle snapshot (taken immediately before the
 hook, except that `off` is frozen when stream completion is determined):
@@ -128,7 +141,8 @@ hook. The `off` context is snapshotted when the stream completion outcome is
 determined, before completion diagnostics and cleanup begin. A signal arriving
 later can change pipewisp's final exit status, but does not change the `off`
 event, reason, byte count, or duration; cleanup time is not added to that
-snapshot.
+snapshot. Ignoring a hook failure does not create or rewrite a lifecycle
+completion reason.
 
 All lifecycle hook options execute their command through a shell. Do not pass
 untrusted or unsanitized command strings: shell metacharacters have their
@@ -141,10 +155,10 @@ normal platform-specific meaning.
 | Normal EOF | 0 | Run `--off`, if present. |
 | Downstream broken pipe (EPIPE) | 0 | Treat downstream closure as normal; run `--off` and suppress the broken-pipe diagnostic. |
 | Other copy/I/O error | 1 | Report the error and run `--off`, if present. |
-| `--on` failure | 1 | Report the hook failure; do not copy data or run `--off`. |
-| `--on-first-data` failure | 1 | Report the hook failure, write the already-read first bytes unchanged, stop before reading more input, and run `--off`, if present. |
-| `--on-idle` or `--on-resume` failure | 1 | Report the hook failure, continue copying, and run `--off`, if present. |
-| `--off` failure | 1 | Report the hook failure. |
+| `--on` failure | 1 | Report the hook failure; do not copy data or run `--off`. With `--ignore-hook-errors`, continue normally instead. |
+| `--on-first-data` failure | 1 | Report the hook failure, write the already-read first bytes unchanged, stop before reading more input, and run `--off`, if present. With `--ignore-hook-errors`, continue reading after those bytes. |
+| `--on-idle` or `--on-resume` failure | 1 | Report the hook failure, continue copying, and run `--off`, if present. With `--ignore-hook-errors`, the failure does not affect final status. |
+| `--off` failure | 1 | Report the hook failure. With `--ignore-hook-errors`, preserve the pre-existing lifecycle result. |
 | SIGINT / Ctrl+C | 130 | Run `--off` synchronously; this signal status wins if `--off` also fails. |
 | SIGTERM (Unix) | 143 | Run `--off` synchronously; this signal status wins if `--off` also fails. |
 
@@ -156,6 +170,6 @@ reopen a closed pipe, or determine how an upstream producer reacts.
 ## Scope and cleanup limits
 
 The interface has no configuration files, multiple hooks of the same lifecycle
-kind, verbose mode, or option to ignore hook failures. Cleanup
-cannot run after SIGKILL, an unrecoverable process crash, or power loss,
-because those conditions do not allow a user-space hook to execute.
+kind, verbose mode, or general hook-policy framework. Cleanup cannot run after
+SIGKILL, an unrecoverable process crash, or power loss, because those
+conditions do not allow a user-space hook to execute.

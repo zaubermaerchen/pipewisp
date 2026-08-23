@@ -38,7 +38,7 @@ func runWithOptions(opts options, in io.Reader, out io.Writer, diagnostics io.Wr
 
 	var done completion
 	if opts.onSet {
-		if err := runHookWithContextAndTracker("on", opts.on, state.snapshot("on", ""), diagnostics, opts.hookTimeout, tracker); err != nil {
+		if err := runHookWithContextAndTracker("on", opts.on, state.snapshot("on", ""), diagnostics, opts.hookTimeout, tracker, opts.ignoreHookErrors); err != nil {
 			if sig := tracker.poll(); sig != nil {
 				done = completion{signal: sig}
 			} else {
@@ -63,7 +63,7 @@ func runWithOptions(opts options, in io.Reader, out io.Writer, diagnostics io.Wr
 				reader:   in,
 				finished: make(chan struct{}),
 				hook: func() error {
-					return runHookWithContextAndTracker("on-first-data", opts.onFirstData, state.snapshot("first-data", ""), diagnostics, opts.hookTimeout, tracker)
+					return runHookWithContextAndTracker("on-first-data", opts.onFirstData, state.snapshot("first-data", ""), diagnostics, opts.hookTimeout, tracker, opts.ignoreHookErrors)
 				},
 			}
 			input = firstData
@@ -99,7 +99,7 @@ func runWithOptions(opts options, in io.Reader, out io.Writer, diagnostics io.Wr
 	var runOff func() error
 	if opts.offSet {
 		runOff = func() error {
-			return runHookWithContextAndTracker("off", opts.off, offContext, diagnostics, opts.hookTimeout, tracker)
+			return runHookWithContextAndTracker("off", opts.off, offContext, diagnostics, opts.hookTimeout, tracker, opts.ignoreHookErrors)
 		}
 	}
 	return finishCompletionWithTracker(done, runOff, diagnostics, tracker)
