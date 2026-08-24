@@ -28,6 +28,13 @@ func failingHookCommand(output string) string {
 	return hookOutputCommand(output) + "; exit 7"
 }
 
+func shutdownContextWithoutReasonCommand() string {
+	if runtime.GOOS == "windows" {
+		return "if defined PIPEWISP_REASON (echo %PIPEWISP_EVENT%:%PIPEWISP_REASON%) else (echo %PIPEWISP_EVENT%:missing)"
+	}
+	return `if [ -n "${PIPEWISP_REASON+x}" ]; then printf '%s:%s' "$PIPEWISP_EVENT" "$PIPEWISP_REASON"; else printf '%s:missing' "$PIPEWISP_EVENT"; fi`
+}
+
 func unixQuote(value string) string {
 	return "'" + strings.ReplaceAll(value, "'", "'\\''") + "'"
 }

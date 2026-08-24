@@ -185,6 +185,10 @@ func normalizeHookWaitError(err error) error {
 
 func lifecycleEventForHookName(name string) string {
 	switch name {
+	case "on-ready":
+		return "ready"
+	case "on-shutdown":
+		return "shutdown"
 	case "on-first-data":
 		return "first-data"
 	case "on-idle":
@@ -215,7 +219,7 @@ func hookEnvironment(context hookContext) []string {
 		hookEnvBytes+"="+strconv.FormatInt(context.bytes, 10),
 		hookEnvDurationMilliseconds+"="+strconv.FormatInt(context.durationMilliseconds, 10),
 	)
-	if context.event == "off" && context.reason != "" {
+	if context.event == "shutdown" && context.reason != "" {
 		environment = append(environment, hookEnvReason+"="+context.reason)
 	}
 	return environment

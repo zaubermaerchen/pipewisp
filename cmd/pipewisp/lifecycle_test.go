@@ -18,19 +18,19 @@ func TestRunWithHooksInOrder(t *testing.T) {
 	out := eventWriter{label: "copy", events: &events}
 	diagnostics := eventWriter{label: "diagnostics", events: &events}
 	config := options{
-		on:             hookOutputCommand("on"),
-		onSet:          true,
+		onReady:        hookOutputCommand("ready"),
+		onReadySet:     true,
 		onFirstData:    hookOutputCommand("first"),
 		onFirstDataSet: true,
-		off:            hookOutputCommand("off"),
-		offSet:         true,
+		onShutdown:     hookOutputCommand("shutdown"),
+		onShutdownSet:  true,
 	}
 
 	if got := runWithOptions(config, bytes.NewReader(input), out, diagnostics); got != 0 {
 		t.Fatalf("runWithOptions() exit code = %d, want 0", got)
 	}
 	got := strings.NewReplacer("\r", "", "\n", "").Replace(strings.Join(events, ""))
-	if want := "diagnostics:ondiagnostics:firstcopy:inputdiagnostics:off"; got != want {
+	if want := "diagnostics:readydiagnostics:firstcopy:inputdiagnostics:shutdown"; got != want {
 		t.Fatalf("event sequence = %q, want %q", got, want)
 	}
 }
@@ -131,15 +131,15 @@ func TestFirstDataHookRunsBeforeWriteError(t *testing.T) {
 	}
 }
 
-func TestFirstDataHookFailurePreservesFirstBytesAndStillRunsOff(t *testing.T) {
+func TestFirstDataHookFailurePreservesFirstBytesAndStillRunsShutdown(t *testing.T) {
 	var output bytes.Buffer
 	var diagnostics bytes.Buffer
 	input := &shortReadReader{chunks: [][]byte{[]byte("first"), []byte("later")}}
 	config := options{
 		onFirstData:    failingHookCommand("first"),
 		onFirstDataSet: true,
-		off:            hookOutputCommand("off"),
-		offSet:         true,
+		onShutdown:     shutdownContextWithoutReasonCommand(),
+		onShutdownSet:  true,
 	}
 
 	if got := runWithOptions(config, input, &output, &diagnostics); got != 1 {
@@ -152,8 +152,8 @@ func TestFirstDataHookFailurePreservesFirstBytesAndStillRunsOff(t *testing.T) {
 	if got := strings.Count(cleanDiagnostics, "on-first-data hook failed"); got != 1 {
 		t.Fatalf("first-data failure diagnostic count = %d, want 1; diagnostics = %q", got, diagnostics.String())
 	}
-	if !strings.Contains(cleanDiagnostics, "off") {
-		t.Fatalf("diagnostics = %q, want off hook output", diagnostics.String())
+	if !strings.Contains(cleanDiagnostics, "shutdown:missing") {
+		t.Fatalf("diagnostics = %q, want shutdown hook output without a reason", diagnostics.String())
 	}
 }
 
@@ -228,14 +228,14 @@ func (r *shortReadReader) Read(p []byte) (int, error) {
 	return n, nil
 }
 
-func TestOnFailurePreventsCopyAndOff(t *testing.T) {
+func TestReadyFailurePreventsCopyAndShutdown(t *testing.T) {
 	var output bytes.Buffer
 	var diagnostics bytes.Buffer
 	config := options{
-		on:     failingHookCommand("on"),
-		onSet:  true,
-		off:    hookOutputCommand("off"),
-		offSet: true,
+		onReady:       failingHookCommand("ready"),
+		onReadySet:    true,
+		onShutdown:    hookOutputCommand("shutdown"),
+		onShutdownSet: true,
 	}
 
 	if got := runWithOptions(config, strings.NewReader("input"), &output, &diagnostics); got != 1 {
@@ -244,18 +244,18 @@ func TestOnFailurePreventsCopyAndOff(t *testing.T) {
 	if output.Len() != 0 {
 		t.Fatalf("copy output = %q, want empty", output.String())
 	}
-	if strings.Contains(diagnostics.String(), "off") {
-		t.Fatalf("diagnostics = %q, off hook appears to have run", diagnostics.String())
+	if strings.Contains(diagnostics.String(), "shutdown") {
+		t.Fatalf("diagnostics = %q, shutdown hook appears to have run", diagnostics.String())
 	}
-	if !strings.Contains(diagnostics.String(), "on hook failed") {
-		t.Fatalf("diagnostics = %q, want on hook failure", diagnostics.String())
+	if !strings.Contains(diagnostics.String(), "pipewisp: on-ready hook failed:") {
+		t.Fatalf("diagnostics = %q, want ready hook failure", diagnostics.String())
 	}
 }
 
-func TestOffFailureReturnsErrorAfterCopy(t *testing.T) {
+func TestShutdownFailureReturnsErrorAfterCopy(t *testing.T) {
 	var output bytes.Buffer
 	var diagnostics bytes.Buffer
-	config := options{off: failingHookCommand("off"), offSet: true}
+	config := options{onShutdown: failingHookCommand("shutdown"), onShutdownSet: true}
 
 	if got := runWithOptions(config, strings.NewReader("input"), &output, &diagnostics); got != 1 {
 		t.Fatalf("runWithOptions() exit code = %d, want 1", got)
@@ -263,27 +263,27 @@ func TestOffFailureReturnsErrorAfterCopy(t *testing.T) {
 	if got, want := output.String(), "input"; got != want {
 		t.Fatalf("copy output = %q, want %q", got, want)
 	}
-	if !strings.Contains(diagnostics.String(), "off hook failed") {
-		t.Fatalf("diagnostics = %q, want off hook failure", diagnostics.String())
+	if !strings.Contains(diagnostics.String(), "pipewisp: on-shutdown hook failed:") {
+		t.Fatalf("diagnostics = %q, want shutdown hook failure", diagnostics.String())
 	}
 }
 
-func TestOffRunsAfterCopyFailure(t *testing.T) {
+func TestShutdownRunsAfterCopyFailure(t *testing.T) {
 	var diagnostics bytes.Buffer
-	config := options{off: hookOutputCommand("off"), offSet: true}
+	config := options{onShutdown: hookOutputCommand("shutdown"), onShutdownSet: true}
 
 	if got := runWithOptions(config, strings.NewReader("input"), errorWriter{err: fmt.Errorf("output unavailable")}, &diagnostics); got != 1 {
 		t.Fatalf("runWithOptions() exit code = %d, want 1", got)
 	}
-	if got := diagnostics.String(); !strings.Contains(got, "pipewisp: output unavailable\n") || !strings.Contains(got, "off") {
-		t.Fatalf("diagnostics = %q, want copy error and off output", got)
+	if got := diagnostics.String(); !strings.Contains(got, "pipewisp: output unavailable\n") || !strings.Contains(got, "shutdown") {
+		t.Fatalf("diagnostics = %q, want copy error and shutdown output", got)
 	}
 }
 
 func TestHookOutputNeverReachesPassthroughOutput(t *testing.T) {
 	var output bytes.Buffer
 	var diagnostics bytes.Buffer
-	config := options{on: hookOutputAndErrorCommand("hook-out", "hook-err"), onSet: true}
+	config := options{onReady: hookOutputAndErrorCommand("hook-out", "hook-err"), onReadySet: true}
 
 	if got := runWithOptions(config, strings.NewReader("input"), &output, &diagnostics); got != 0 {
 		t.Fatalf("runWithOptions() exit code = %d, want 0", got)
@@ -303,7 +303,7 @@ func TestHookDoesNotConsumePassthroughInput(t *testing.T) {
 
 	var output bytes.Buffer
 	var diagnostics bytes.Buffer
-	config := options{on: "cat", onSet: true}
+	config := options{onReady: "cat", onReadySet: true}
 
 	if got := runWithOptions(config, strings.NewReader("input"), &output, &diagnostics); got != 0 {
 		t.Fatalf("runWithOptions() exit code = %d, want 0", got)

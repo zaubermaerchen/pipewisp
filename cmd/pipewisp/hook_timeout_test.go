@@ -19,8 +19,8 @@ func TestHookTimeoutStopsProcessAndReportsFailure(t *testing.T) {
 	marker := filepath.Join(directory, "completed")
 	command := hookSleepCommand(1*time.Second) + hookMarkerCommand(marker)
 	config := options{
-		on:             command,
-		onSet:          true,
+		onReady:        command,
+		onReadySet:     true,
 		hookTimeout:    20 * time.Millisecond,
 		hookTimeoutSet: true,
 	}
@@ -34,9 +34,9 @@ func TestHookTimeoutStopsProcessAndReportsFailure(t *testing.T) {
 		t.Fatalf("timed-out hook took %s, want less than 500ms", elapsed)
 	}
 	if got := output.String(); got != "" {
-		t.Fatalf("output = %q, want empty after on hook failure", got)
+		t.Fatalf("output = %q, want empty after ready hook failure", got)
 	}
-	if got := diagnostics.String(); !strings.Contains(got, "on hook failed") || !strings.Contains(got, "timed out") {
+	if got := diagnostics.String(); !strings.Contains(got, "pipewisp: on-ready hook failed:") || !strings.Contains(got, "timed out") {
 		t.Fatalf("diagnostics = %q, want hook failure and timeout", got)
 	}
 	if _, err := os.Stat(marker); !os.IsNotExist(err) {
@@ -81,14 +81,14 @@ func TestHookTimeoutWindowIsIndependentForEachInvocation(t *testing.T) {
 	}
 }
 
-func TestFirstDataHookTimeoutPreservesFirstChunkAndRunsOff(t *testing.T) {
+func TestFirstDataHookTimeoutPreservesFirstChunkAndRunsShutdown(t *testing.T) {
 	var output bytes.Buffer
 	var diagnostics bytes.Buffer
 	config := options{
 		onFirstData:    hookSleepCommand(time.Second),
 		onFirstDataSet: true,
-		off:            hookOutputCommand("off"),
-		offSet:         true,
+		onShutdown:     hookOutputCommand("shutdown"),
+		onShutdownSet:  true,
 		hookTimeout:    20 * time.Millisecond,
 		hookTimeoutSet: true,
 	}
@@ -99,12 +99,12 @@ func TestFirstDataHookTimeoutPreservesFirstChunkAndRunsOff(t *testing.T) {
 	if got, want := output.String(), "first"; got != want {
 		t.Fatalf("output = %q, want %q", got, want)
 	}
-	if got := diagnostics.String(); !strings.Contains(got, "on-first-data hook failed") || !strings.Contains(got, "timed out") || !strings.Contains(got, "off") {
-		t.Fatalf("diagnostics = %q, want first-data timeout and off output", got)
+	if got := diagnostics.String(); !strings.Contains(got, "on-first-data hook failed") || !strings.Contains(got, "timed out") || !strings.Contains(got, "shutdown") {
+		t.Fatalf("diagnostics = %q, want first-data timeout and shutdown output", got)
 	}
 }
 
-func TestIdleHookTimeoutContinuesCopyAndRunsOff(t *testing.T) {
+func TestIdleHookTimeoutContinuesCopyAndRunsShutdown(t *testing.T) {
 	directory := t.TempDir()
 	marker := filepath.Join(directory, "idle")
 	input := &gatedReader{first: []byte("a"), second: []byte("b"), secondReady: make(chan struct{})}
@@ -113,8 +113,8 @@ func TestIdleHookTimeoutContinuesCopyAndRunsOff(t *testing.T) {
 		idleSet:        true,
 		onIdle:         hookStartMarkerCommand(marker) + hookSleepCommand(time.Second),
 		onIdleSet:      true,
-		off:            hookOutputCommand("off"),
-		offSet:         true,
+		onShutdown:     hookOutputCommand("shutdown"),
+		onShutdownSet:  true,
 		hookTimeout:    20 * time.Millisecond,
 		hookTimeoutSet: true,
 	}
@@ -135,25 +135,25 @@ func TestIdleHookTimeoutContinuesCopyAndRunsOff(t *testing.T) {
 	if got, want := output.String(), "ab"; got != want {
 		t.Fatalf("output = %q, want %q", got, want)
 	}
-	if got := diagnostics.String(); !strings.Contains(got, "on-idle hook failed") || !strings.Contains(got, "timed out") || !strings.Contains(got, "off") {
-		t.Fatalf("diagnostics = %q, want idle timeout and off output", got)
+	if got := diagnostics.String(); !strings.Contains(got, "on-idle hook failed") || !strings.Contains(got, "timed out") || !strings.Contains(got, "shutdown") {
+		t.Fatalf("diagnostics = %q, want idle timeout and shutdown output", got)
 	}
 }
 
-func TestOffHookTimeoutReportsFailure(t *testing.T) {
+func TestShutdownHookTimeoutReportsFailure(t *testing.T) {
 	var output bytes.Buffer
 	var diagnostics bytes.Buffer
 	config := options{
-		off:            hookSleepCommand(time.Second),
-		offSet:         true,
+		onShutdown:     hookSleepCommand(time.Second),
+		onShutdownSet:  true,
 		hookTimeout:    20 * time.Millisecond,
 		hookTimeoutSet: true,
 	}
 	if got := runWithOptions(config, strings.NewReader("input"), &output, &diagnostics); got != 1 {
 		t.Fatalf("runWithOptions() exit code = %d, want 1; diagnostics = %q", got, diagnostics.String())
 	}
-	if got := diagnostics.String(); !strings.Contains(got, "off hook failed") || !strings.Contains(got, "timed out") {
-		t.Fatalf("diagnostics = %q, want off timeout", got)
+	if got := diagnostics.String(); !strings.Contains(got, "pipewisp: on-shutdown hook failed:") || !strings.Contains(got, "timed out") {
+		t.Fatalf("diagnostics = %q, want shutdown timeout", got)
 	}
 }
 

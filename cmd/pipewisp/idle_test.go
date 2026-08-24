@@ -463,7 +463,7 @@ func TestIdleFirstDataHookPrecedesFirstWrite(t *testing.T) {
 	}
 }
 
-func TestIdleFirstDataHookFailureWritesOnlyFirstChunkAndRunsOff(t *testing.T) {
+func TestIdleFirstDataHookFailureWritesOnlyFirstChunkAndRunsShutdown(t *testing.T) {
 	input := &shortReadReader{chunks: [][]byte{[]byte("first"), []byte("later")}}
 	var output bytes.Buffer
 	var diagnostics bytes.Buffer
@@ -472,8 +472,8 @@ func TestIdleFirstDataHookFailureWritesOnlyFirstChunkAndRunsOff(t *testing.T) {
 		idleSet:        true,
 		onFirstData:    failingHookCommand("first-data"),
 		onFirstDataSet: true,
-		off:            hookOutputCommand("off"),
-		offSet:         true,
+		onShutdown:     hookOutputCommand("shutdown"),
+		onShutdownSet:  true,
 	}
 
 	if got := runWithOptions(config, input, &output, &diagnostics); got != 1 {
@@ -486,8 +486,8 @@ func TestIdleFirstDataHookFailureWritesOnlyFirstChunkAndRunsOff(t *testing.T) {
 	if !strings.Contains(cleanDiagnostics, "on-first-data hook failed") {
 		t.Fatalf("diagnostics = %q, want first-data hook failure", diagnostics.String())
 	}
-	if !strings.Contains(cleanDiagnostics, "off") {
-		t.Fatalf("diagnostics = %q, want off hook output", diagnostics.String())
+	if !strings.Contains(cleanDiagnostics, "shutdown") {
+		t.Fatalf("diagnostics = %q, want shutdown hook output", diagnostics.String())
 	}
 }
 

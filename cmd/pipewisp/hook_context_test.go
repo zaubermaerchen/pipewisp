@@ -53,7 +53,7 @@ func TestHookEnvironmentOverridesOwnedKeysAndPreservesParentValues(t *testing.T)
 	}
 }
 
-func TestHookEnvironmentAddsOffReasonOnlyForOff(t *testing.T) {
+func TestHookEnvironmentAddsShutdownReasonOnlyForShutdown(t *testing.T) {
 	t.Setenv("PIPEWISP_REASON", "parent-reason")
 
 	for _, test := range []struct {
@@ -61,7 +61,7 @@ func TestHookEnvironmentAddsOffReasonOnlyForOff(t *testing.T) {
 		context hookContext
 		want    string
 	}{
-		{name: "off", context: hookContext{event: "off", reason: "eof"}, want: "eof"},
+		{name: "shutdown", context: hookContext{event: "shutdown", reason: "eof"}, want: "eof"},
 		{name: "other event", context: hookContext{event: "idle", reason: "eof"}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -111,12 +111,12 @@ func TestRunWithOptionsPublishesLifecycleContext(t *testing.T) {
 	var diagnostics bytes.Buffer
 	command := "printf '%s:%s:%s:' \"$PIPEWISP_EVENT\" \"$PIPEWISP_BYTES\" \"$PIPEWISP_DURATION_MILLISECONDS\"; if [ -n \"${PIPEWISP_REASON+x}\" ]; then printf '%s' \"$PIPEWISP_REASON\"; else printf '<missing>'; fi; printf '\\n'"
 	config := options{
-		on:             "sleep 0.01; " + command,
-		onSet:          true,
+		onReady:        "sleep 0.01; " + command,
+		onReadySet:     true,
 		onFirstData:    command,
 		onFirstDataSet: true,
-		off:            command,
-		offSet:         true,
+		onShutdown:     command,
+		onShutdownSet:  true,
 	}
 
 	if got := runWithOptions(config, strings.NewReader("abc"), &output, &diagnostics); got != 0 {
@@ -129,14 +129,14 @@ func TestRunWithOptionsPublishesLifecycleContext(t *testing.T) {
 	if got, want := len(lines), 3; got != want {
 		t.Fatalf("hook context lines = %#v, want %d lines", lines, want)
 	}
-	if got, want := lines[0], "on:0:0:<missing>"; got != want {
-		t.Fatalf("on context = %q, want %q", got, want)
+	if got, want := lines[0], "ready:0:0:<missing>"; got != want {
+		t.Fatalf("ready context = %q, want %q", got, want)
 	}
 	if got, want := lines[1], "first-data:0:"; !strings.HasPrefix(got, want) || !strings.HasSuffix(got, ":<missing>") {
 		t.Fatalf("first-data context = %q, want bytes 0, nonnegative duration, and no reason", got)
 	}
-	if got, want := lines[2], "off:3:"; !strings.HasPrefix(got, want) || !strings.HasSuffix(got, ":eof") {
-		t.Fatalf("off context = %q, want bytes 3, nonnegative duration, and eof reason", got)
+	if got, want := lines[2], "shutdown:3:"; !strings.HasPrefix(got, want) || !strings.HasSuffix(got, ":eof") {
+		t.Fatalf("shutdown context = %q, want bytes 3, nonnegative duration, and eof reason", got)
 	}
 	for _, line := range lines[1:] {
 		fields := strings.Split(line, ":")
@@ -159,14 +159,14 @@ func TestRunWithOptionsPublishesIdleAndResumeByteSnapshots(t *testing.T) {
 	events := make(chan string, 16)
 	diagnostics := &eventChannelWriter{label: "hook", events: events}
 	config := options{
-		idle:        5 * time.Millisecond,
-		idleSet:     true,
-		onIdle:      command,
-		onIdleSet:   true,
-		onResume:    command,
-		onResumeSet: true,
-		off:         command,
-		offSet:      true,
+		idle:          5 * time.Millisecond,
+		idleSet:       true,
+		onIdle:        command,
+		onIdleSet:     true,
+		onResume:      command,
+		onResumeSet:   true,
+		onShutdown:    command,
+		onShutdownSet: true,
 	}
 
 	done := make(chan int, 1)
@@ -191,8 +191,8 @@ func TestRunWithOptionsPublishesIdleAndResumeByteSnapshots(t *testing.T) {
 			if !containsEvent(observed, "hook:resume:1:") {
 				t.Fatalf("hook events = %#v, want resume bytes snapshot of 1", observed)
 			}
-			if !containsEvent(observed, "hook:off:2:") {
-				t.Fatalf("hook events = %#v, want off bytes snapshot of 2", observed)
+			if !containsEvent(observed, "hook:shutdown:2:") {
+				t.Fatalf("hook events = %#v, want shutdown bytes snapshot of 2", observed)
 			}
 			return
 		}
@@ -279,7 +279,7 @@ func TestCountingWriterReadFromFallbackCountsOnce(t *testing.T) {
 	}
 }
 
-func TestRunWithOptionsPublishesPartialWriteErrorBytesToOff(t *testing.T) {
+func TestRunWithOptionsPublishesPartialWriteErrorBytesToShutdown(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("shell context output uses POSIX quoting")
 	}
@@ -287,8 +287,8 @@ func TestRunWithOptionsPublishesPartialWriteErrorBytesToOff(t *testing.T) {
 	var diagnostics bytes.Buffer
 	output := &partialErrorWriter{max: 2, err: errors.New("partial output failure")}
 	config := options{
-		off:    "printf '%s:%s:%s:%s\\n' \"$PIPEWISP_EVENT\" \"$PIPEWISP_BYTES\" \"$PIPEWISP_DURATION_MILLISECONDS\" \"$PIPEWISP_REASON\"",
-		offSet: true,
+		onShutdown:    "printf '%s:%s:%s:%s\\n' \"$PIPEWISP_EVENT\" \"$PIPEWISP_BYTES\" \"$PIPEWISP_DURATION_MILLISECONDS\" \"$PIPEWISP_REASON\"",
+		onShutdownSet: true,
 	}
 
 	if got := runWithOptions(config, strings.NewReader("input"), output, &diagnostics); got != 1 {
@@ -297,18 +297,18 @@ func TestRunWithOptionsPublishesPartialWriteErrorBytesToOff(t *testing.T) {
 	if got, want := output.output.String(), "in"; got != want {
 		t.Fatalf("partial output = %q, want %q", got, want)
 	}
-	if got := diagnostics.String(); !strings.Contains(got, "off:2:") || !strings.HasSuffix(got, ":io-error\n") {
-		t.Fatalf("off context = %q, want bytes 2 and io-error reason (duration may vary from zero)", got)
+	if got := diagnostics.String(); !strings.Contains(got, "shutdown:2:") || !strings.HasSuffix(got, ":io-error\n") {
+		t.Fatalf("shutdown context = %q, want bytes 2 and io-error reason (duration may vary from zero)", got)
 	}
 }
 
-func TestOffContextRemainsFixedAfterLateSignal(t *testing.T) {
+func TestShutdownContextRemainsFixedAfterLateSignal(t *testing.T) {
 	state := newLifecycleState()
 	state.bytes.Store(4)
 	signals := make(chan os.Signal, 1)
 	tracker := &signalTracker{signals: signals}
 	done := completion{}
-	context := snapshotOffContext(state, done)
+	context := snapshotShutdownContext(state, done)
 
 	var delivered hookContext
 	var diagnostics bytes.Buffer
@@ -322,13 +322,46 @@ func TestOffContextRemainsFixedAfterLateSignal(t *testing.T) {
 		t.Fatalf("finishCompletionWithTracker() status = %d, want 130", status)
 	}
 	if delivered != context {
-		t.Fatalf("off context changed during late signal: delivered = %#v, snapshot = %#v", delivered, context)
+		t.Fatalf("shutdown context changed during late signal: delivered = %#v, snapshot = %#v", delivered, context)
 	}
 	if got, want := context.reason, "eof"; got != want {
-		t.Fatalf("off reason = %q, want %q", got, want)
+		t.Fatalf("shutdown reason = %q, want %q", got, want)
 	}
 	if got, want := context.bytes, int64(4); got != want {
-		t.Fatalf("off bytes = %d, want %d", got, want)
+		t.Fatalf("shutdown bytes = %d, want %d", got, want)
+	}
+}
+
+func TestLifecycleReadySnapshotDurationIsAlwaysZero(t *testing.T) {
+	state := &lifecycleState{started: time.Now().Add(-time.Hour)}
+	state.bytes.Store(7)
+
+	context := state.snapshot("ready", "")
+	if context.event != "ready" {
+		t.Fatalf("ready context event = %q, want ready", context.event)
+	}
+	if context.bytes != 7 {
+		t.Fatalf("ready context bytes = %d, want 7", context.bytes)
+	}
+	if context.durationMilliseconds != 0 {
+		t.Fatalf("ready context duration = %d, want 0", context.durationMilliseconds)
+	}
+}
+
+func TestLifecycleEventForHookName(t *testing.T) {
+	tests := map[string]string{
+		"on-ready":      "ready",
+		"on-shutdown":   "shutdown",
+		"on-first-data": "first-data",
+		"on-idle":       "idle",
+		"on-resume":     "resume",
+	}
+	for name, want := range tests {
+		t.Run(name, func(t *testing.T) {
+			if got := lifecycleEventForHookName(name); got != want {
+				t.Fatalf("lifecycleEventForHookName(%q) = %q, want %q", name, got, want)
+			}
+		})
 	}
 }
 

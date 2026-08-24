@@ -64,13 +64,13 @@ func TestIdleSignalDuringHookSkipsNewResume(t *testing.T) {
 	}
 }
 
-func TestIdleSignalDuringFirstDataHookWaitsBeforeOff(t *testing.T) {
+func TestIdleSignalDuringFirstDataHookWaitsBeforeShutdown(t *testing.T) {
 	directory := t.TempDir()
 	started := filepath.Join(directory, "first.started")
 	done := filepath.Join(directory, "first.done")
 	events := filepath.Join(directory, "events")
 	onFirstData := "printf x > " + unixQuote(started) + "; sleep 1; printf x > " + unixQuote(done) + "; printf first >> " + unixQuote(events)
-	off := "printf off >> " + unixQuote(events)
+	shutdown := "printf shutdown >> " + unixQuote(events)
 	signals := make(chan os.Signal, 1)
 	tracker := &signalTracker{signals: signals}
 	config := options{
@@ -105,7 +105,7 @@ func TestIdleSignalDuringFirstDataHookWaitsBeforeOff(t *testing.T) {
 		t.Fatalf("runIdleCopy() signal = %v, want %v", doneCompletion.signal, os.Interrupt)
 	}
 	status := finishCompletion(doneCompletion, func() error {
-		return runHook("off", off, &diagnostics)
+		return runHook("on-shutdown", shutdown, &diagnostics)
 	}, &diagnostics)
 	if status != 130 {
 		t.Fatalf("finishCompletion() status = %d, want 130", status)
@@ -118,8 +118,8 @@ func TestIdleSignalDuringFirstDataHookWaitsBeforeOff(t *testing.T) {
 	if _, err := os.Stat(done); !os.IsNotExist(err) {
 		t.Fatalf("first-data completion marker exists after signal: err = %v", err)
 	}
-	if got, want := readMarker(t, events), "off"; got != want {
-		t.Fatalf("first-data/off markers = %q, want %q", got, want)
+	if got, want := readMarker(t, events), "shutdown"; got != want {
+		t.Fatalf("first-data/shutdown markers = %q, want %q", got, want)
 	}
 }
 
