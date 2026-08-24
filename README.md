@@ -78,7 +78,7 @@ if ($actual -ne $expected) { throw "checksum mismatch: $archive" }
 
 ```mermaid
 flowchart TD
-    start([Start]) --> ready["on-ready hook"]
+    start([Start]) --> ready["ready hook"]
     ready --> input["Wait for input"]
 
     input --> first["First data"]
@@ -92,7 +92,7 @@ flowchart TD
     resume -->|data| resumehook["resume hook"]
     resumehook --> pass
 
-    input -->|EOF / error / signal| shutdown["on-shutdown hook"]
+    input -->|EOF / error / signal| shutdown["shutdown hook"]
     wait -->|EOF / error / signal| shutdown
     resume -->|EOF / error / signal| shutdown
     shutdown --> done([Exit])
