@@ -10,7 +10,8 @@ import (
 
 type firstDataReader struct {
 	reader   io.Reader
-	hook     func() error
+	hook     func(hookContext) error
+	event    func() hookContext
 	finished chan struct{}
 	mu       sync.Mutex
 	running  bool
@@ -52,7 +53,14 @@ func (r *firstDataReader) Read(p []byte) (int, error) {
 	r.running = true
 	r.mu.Unlock()
 
-	hookErr := r.hook()
+	context := hookContext{event: "first-data"}
+	if r.event != nil {
+		context = r.event()
+	}
+	hookErr := error(nil)
+	if r.hook != nil {
+		hookErr = r.hook(context)
+	}
 	r.mu.Lock()
 	r.running = false
 	r.failed = hookErr != nil

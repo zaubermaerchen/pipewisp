@@ -44,7 +44,16 @@ func runHookWithContext(name, command string, context hookContext, diagnostics i
 }
 
 func runHookWithContextAndTracker(name, command string, context hookContext, diagnostics io.Writer, timeout time.Duration, tracker *signalTracker, ignoreErrors bool) error {
-	if err := executeHookWithControl(command, context, diagnostics, timeout, tracker); err != nil {
+	reporter := verboseForWriter(diagnostics)
+	var started time.Time
+	if reporter != nil {
+		reporter.hookStart(context.event)
+	}
+	err := executeHookWithControl(command, context, diagnostics, timeout, tracker, func() { started = time.Now() })
+	if reporter != nil {
+		reporter.hookEnd(context.event, started, err)
+	}
+	if err != nil {
 		reportDiagnostic(diagnostics, fmt.Errorf("%s hook failed: %w", name, err))
 		var signalErr *hookSignalError
 		if ignoreErrors && !errors.As(err, &signalErr) {
@@ -56,7 +65,7 @@ func runHookWithContextAndTracker(name, command string, context hookContext, dia
 }
 
 func executeHook(command string, context hookContext, diagnostics io.Writer) error {
-	return executeHookWithControl(command, context, diagnostics, 0, nil)
+	return executeHookWithControl(command, context, diagnostics, 0, nil, nil)
 }
 
 type hookTimeoutError struct {
@@ -72,6 +81,19 @@ type hookSignalError struct {
 	waitErr error
 }
 
+type hookStartError struct{ err error }
+
+func (err *hookStartError) Error() string { return err.err.Error() }
+func (err *hookStartError) Unwrap() error { return err.err }
+
+type hookProcessError struct {
+	err   error
+	state *os.ProcessState
+}
+
+func (err *hookProcessError) Error() string { return err.err.Error() }
+func (err *hookProcessError) Unwrap() error { return err.err }
+
 func (err *hookSignalError) Error() string {
 	if err.waitErr == nil {
 		return fmt.Sprintf("hook interrupted by %v", err.signal)
@@ -83,7 +105,7 @@ func (err *hookSignalError) Unwrap() error {
 	return err.waitErr
 }
 
-func executeHookWithControl(command string, context hookContext, diagnostics io.Writer, timeout time.Duration, tracker *signalTracker) error {
+func executeHookWithControl(command string, context hookContext, diagnostics io.Writer, timeout time.Duration, tracker *signalTracker, beforeStart func()) error {
 	hook := newShellCommand(command)
 	// Hooks must not consume bytes that belong to the passthrough stream.
 	hook.Stdin = nil
@@ -107,8 +129,11 @@ func executeHookWithControl(command string, context hookContext, diagnostics io.
 		signalGeneration, signalDone = tracker.beginHookObservation()
 		signalC = tracker.signals
 	}
+	if beforeStart != nil {
+		beforeStart()
+	}
 	if err := hook.Start(); err != nil {
-		return err
+		return &hookStartError{err: err}
 	}
 	waitDone := make(chan error, 1)
 	go func() {
@@ -128,25 +153,41 @@ func executeHookWithControl(command string, context hookContext, diagnostics io.
 	for {
 		select {
 		case err := <-waitDone:
-			return normalizeHookWaitError(err)
+			return wrapHookProcessError(normalizeHookWaitError(err), hook.ProcessState)
 		case <-timeoutC:
 			if tracker != nil {
 				// A signal and the timer may become ready together. Signal status
 				// takes precedence when the signal was accepted during this hook.
 				tracker.poll()
 				if tracker.generationChanged(signalGeneration) {
+					select {
+					case waitErr := <-waitDone:
+						return wrapHookProcessError(normalizeHookWaitError(waitErr), hook.ProcessState)
+					default:
+					}
 					killErr := hook.Process.Kill()
 					waitErr := <-waitDone
 					if errors.Is(killErr, os.ErrProcessDone) {
-						return normalizeHookWaitError(waitErr)
+						return wrapHookProcessError(normalizeHookWaitError(waitErr), hook.ProcessState)
+					}
+					if !processStateKilledByPipewisp(hook.ProcessState) {
+						return wrapHookProcessError(normalizeHookWaitError(waitErr), hook.ProcessState)
 					}
 					return &hookSignalError{signal: tracker.firstSignal(), waitErr: waitErr}
 				}
 			}
+			select {
+			case waitErr := <-waitDone:
+				return wrapHookProcessError(normalizeHookWaitError(waitErr), hook.ProcessState)
+			default:
+			}
 			killErr := hook.Process.Kill()
 			waitErr := <-waitDone
 			if errors.Is(killErr, os.ErrProcessDone) {
-				return normalizeHookWaitError(waitErr)
+				return wrapHookProcessError(normalizeHookWaitError(waitErr), hook.ProcessState)
+			}
+			if !processStateKilledByPipewisp(hook.ProcessState) {
+				return wrapHookProcessError(normalizeHookWaitError(waitErr), hook.ProcessState)
 			}
 			return &hookTimeoutError{duration: timeout}
 		case sig := <-signalC:
@@ -154,20 +195,36 @@ func executeHookWithControl(command string, context hookContext, diagnostics io.
 			if sig == nil {
 				continue
 			}
+			select {
+			case waitErr := <-waitDone:
+				return wrapHookProcessError(normalizeHookWaitError(waitErr), hook.ProcessState)
+			default:
+			}
 			killErr := hook.Process.Kill()
 			waitErr := <-waitDone
 			if errors.Is(killErr, os.ErrProcessDone) {
-				return normalizeHookWaitError(waitErr)
+				return wrapHookProcessError(normalizeHookWaitError(waitErr), hook.ProcessState)
+			}
+			if !processStateKilledByPipewisp(hook.ProcessState) {
+				return wrapHookProcessError(normalizeHookWaitError(waitErr), hook.ProcessState)
 			}
 			return &hookSignalError{signal: tracker.firstSignal(), waitErr: waitErr}
 		case <-signalDone:
 			if !tracker.generationChanged(signalGeneration) {
 				continue
 			}
+			select {
+			case waitErr := <-waitDone:
+				return wrapHookProcessError(normalizeHookWaitError(waitErr), hook.ProcessState)
+			default:
+			}
 			killErr := hook.Process.Kill()
 			waitErr := <-waitDone
 			if errors.Is(killErr, os.ErrProcessDone) {
-				return normalizeHookWaitError(waitErr)
+				return wrapHookProcessError(normalizeHookWaitError(waitErr), hook.ProcessState)
+			}
+			if !processStateKilledByPipewisp(hook.ProcessState) {
+				return wrapHookProcessError(normalizeHookWaitError(waitErr), hook.ProcessState)
 			}
 			return &hookSignalError{signal: tracker.firstSignal(), waitErr: waitErr}
 		}
@@ -181,6 +238,13 @@ func normalizeHookWaitError(err error) error {
 		return nil
 	}
 	return err
+}
+
+func wrapHookProcessError(err error, state *os.ProcessState) error {
+	if err == nil {
+		return nil
+	}
+	return &hookProcessError{err: err, state: state}
 }
 
 func lifecycleEventForHookName(name string) string {

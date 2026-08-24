@@ -35,14 +35,20 @@ func run(in io.Reader, out io.Writer, diagnostics io.Writer) int {
 func runWithOptions(opts options, in io.Reader, out io.Writer, diagnostics io.Writer) int {
 	state := newLifecycleState()
 	countedOut := state.writer(out)
+	reporter := newVerboseReporter(diagnostics, opts.verbose)
+	if opts.verbose {
+		diagnostics = reporter
+	}
 
 	// Subscribe before ready so a signal during readiness is retained for final status selection.
 	tracker, stopSignals := subscribePassthroughSignals()
 	defer stopSignals()
 
 	var done completion
+	readyContext := state.snapshot("ready", "")
+	reporter.event(readyContext)
 	if opts.onReadySet {
-		if err := runHookWithContextAndTracker("on-ready", opts.onReady, state.snapshot("ready", ""), diagnostics, opts.hookTimeout, tracker, opts.ignoreHookErrors); err != nil {
+		if err := runHookWithContextAndTracker("on-ready", opts.onReady, readyContext, diagnostics, opts.hookTimeout, tracker, opts.ignoreHookErrors); err != nil {
 			if sig := tracker.poll(); sig != nil {
 				done = completion{signal: sig}
 			} else {
@@ -62,13 +68,24 @@ func runWithOptions(opts options, in io.Reader, out io.Writer, diagnostics io.Wr
 	} else {
 		copyDone := make(chan error, 1)
 		input := in
-		if opts.onFirstDataSet {
+		if opts.onFirstDataSet || opts.verbose {
 			firstData = &firstDataReader{
 				reader:   in,
 				finished: make(chan struct{}),
-				hook: func() error {
-					return runHookWithContextAndTracker("on-first-data", opts.onFirstData, state.snapshot("first-data", ""), diagnostics, opts.hookTimeout, tracker, opts.ignoreHookErrors)
+				hook: func(context hookContext) error {
+					if !opts.onFirstDataSet {
+						return nil
+					}
+					context = hookContextForInvocation(state, "first-data", context, opts.verbose)
+					return runHookWithContextAndTracker("on-first-data", opts.onFirstData, context, diagnostics, opts.hookTimeout, tracker, opts.ignoreHookErrors)
 				},
+			}
+			if opts.verbose {
+				firstData.event = func() hookContext {
+					context := state.snapshot("first-data", "")
+					reporter.event(context)
+					return context
+				}
 			}
 			input = firstData
 		}
@@ -79,13 +96,10 @@ func runWithOptions(opts options, in io.Reader, out io.Writer, diagnostics io.Wr
 		done = tracker.waitForCopy(copyDone)
 	}
 
-	var shutdownContext hookContext
-	if opts.onShutdownSet {
-		// Completion has now selected the lifecycle event and reason. Freeze the
-		// public cleanup context before signal cancellation or hook coordination
-		// can add time or allow more writes to finish.
-		shutdownContext = snapshotShutdownContext(state, done)
-	}
+	// Completion has now selected the lifecycle event and reason. Freeze the
+	// public cleanup context before diagnostics, signal cancellation, or hook
+	// coordination can add time or allow more writes to finish.
+	shutdownContext := snapshotShutdownContext(state, done)
 	if done.signal != nil {
 		if firstData != nil {
 			if firstData.cancel() {
@@ -95,6 +109,13 @@ func runWithOptions(opts options, in io.Reader, out io.Writer, diagnostics io.Wr
 			}
 		}
 		closeInput(in)
+	}
+	// Keep the snapshot above at the completion-selection point, but defer its
+	// record until an in-flight first-data hook has finished writing its own
+	// terminal and failure diagnostics. This preserves lifecycle output order
+	// without changing the context observed by the shutdown hook.
+	if opts.verbose {
+		reporter.event(shutdownContext)
 	}
 	if firstData != nil {
 		done.firstDataHookFailed = firstData.hookFailed()
@@ -118,6 +139,13 @@ func closeInput(in io.Reader) {
 
 func snapshotShutdownContext(state *lifecycleState, done completion) hookContext {
 	return state.snapshot("shutdown", completionReason(done))
+}
+
+func hookContextForInvocation(state *lifecycleState, event string, observed hookContext, verbose bool) hookContext {
+	if verbose {
+		return observed
+	}
+	return state.snapshot(event, "")
 }
 
 func reportDiagnostic(diagnostics io.Writer, err error) {

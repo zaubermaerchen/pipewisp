@@ -250,6 +250,49 @@ func TestSubprocessSignalDuringFirstDataHookWaitsBeforeShutdown(t *testing.T) {
 	}
 }
 
+func TestSubprocessVerboseSignalWaitsForFirstDataDiagnosticsBeforeShutdownEvent(t *testing.T) {
+	binary := buildPipewispBinary(t)
+	directory := t.TempDir()
+	started := filepath.Join(directory, "first.started")
+	onFirstDataCommand := "printf hook-output; printf started > " + unixQuote(started) + "; sleep 1; exit 7"
+
+	cmd := exec.Command(binary, "--verbose", "--on-first-data", onFirstDataCommand, "--on-shutdown", "true")
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		t.Fatalf("StdinPipe() error = %v", err)
+	}
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	defer stdin.Close()
+
+	if _, err := stdin.Write([]byte("input")); err != nil {
+		t.Fatalf("stdin.Write() error = %v", err)
+	}
+	waitForMarker(t, started)
+	if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
+		t.Fatalf("Signal(SIGTERM) error = %v", err)
+	}
+
+	if got := processExitCode(t, cmd); got != 143 {
+		t.Fatalf("process exit code = %d, want 143; stdout = %q; stderr = %q", got, stdout.String(), stderr.String())
+	}
+	got := stderr.String()
+	hookOutput := strings.Index(got, "hook-output")
+	firstDataTerminal := strings.Index(got, "type=hook event=first-data state=interrupted signal=SIGTERM")
+	firstDataFailure := strings.Index(got, "pipewisp: on-first-data hook failed:")
+	shutdownEvent := strings.Index(got, "type=event event=shutdown reason=signal")
+	if hookOutput < 0 || firstDataTerminal < 0 || firstDataFailure < 0 || shutdownEvent < 0 {
+		t.Fatalf("stderr = %q, missing first-data terminal/failure or shutdown event", got)
+	}
+	if hookOutput > shutdownEvent || firstDataTerminal > shutdownEvent || firstDataFailure > shutdownEvent {
+		t.Fatalf("stderr = %q, first-data diagnostics must precede shutdown event", got)
+	}
+}
+
 func TestSubprocessSignalDuringShutdownAfterEOF(t *testing.T) {
 	tests := []struct {
 		name   string

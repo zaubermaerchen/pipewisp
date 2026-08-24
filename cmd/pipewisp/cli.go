@@ -11,6 +11,7 @@ import (
 
 type options struct {
 	showVersion      bool
+	verbose          bool
 	onReady          string
 	onReadySet       bool
 	onFirstData      string
@@ -39,6 +40,11 @@ func parseArgs(args []string) (options, bool, error) {
 				return options{}, false, fmt.Errorf("--version cannot be combined with other arguments")
 			}
 			return options{showVersion: true}, false, nil
+		case arg == "--verbose":
+			if opts.verbose {
+				return options{}, false, fmt.Errorf("--verbose specified more than once")
+			}
+			opts.verbose = true
 		case arg == "-h" || arg == "--help":
 			if len(args) != 1 {
 				return options{}, false, fmt.Errorf("%s cannot be combined with other arguments", arg)
@@ -254,5 +260,5 @@ func validateCommand(command, option string) (string, error) {
 }
 
 func printUsage(out io.Writer) {
-	_, _ = out.Write([]byte("Usage: pipewisp [--on-ready COMMAND] [--on-first-data COMMAND] [--on-shutdown COMMAND] [--idle DURATION] [--on-idle COMMAND] [--on-resume COMMAND] [--hook-timeout DURATION] [--ignore-hook-errors]\n       pipewisp --version\n"))
+	_, _ = out.Write([]byte("Usage: pipewisp [--verbose] [--on-ready COMMAND] [--on-first-data COMMAND] [--on-shutdown COMMAND] [--idle DURATION] [--on-idle COMMAND] [--on-resume COMMAND] [--hook-timeout DURATION] [--ignore-hook-errors]\n       pipewisp --version\n"))
 }

@@ -348,6 +348,49 @@ func TestLifecycleReadySnapshotDurationIsAlwaysZero(t *testing.T) {
 	}
 }
 
+func TestHookContextForInvocationSnapshotsWhenVerboseDisabled(t *testing.T) {
+	for _, event := range []string{"first-data", "idle", "resume"} {
+		t.Run(event, func(t *testing.T) {
+			state := &lifecycleState{started: time.Unix(0, 0)}
+			state.bytes.Store(7)
+			observed := hookContext{
+				event:                event,
+				bytes:                99,
+				durationMilliseconds: 123,
+			}
+
+			got := hookContextForInvocation(state, event, observed, false)
+			if got.event != event {
+				t.Fatalf("hook context event = %q, want %s", got.event, event)
+			}
+			if got.bytes != 7 {
+				t.Fatalf("hook context bytes = %d, want current state bytes 7", got.bytes)
+			}
+			if got.durationMilliseconds <= observed.durationMilliseconds {
+				t.Fatalf("hook context duration = %d, want invocation-time snapshot after sentinel duration %d", got.durationMilliseconds, observed.durationMilliseconds)
+			}
+		})
+	}
+}
+
+func TestHookContextForInvocationReusesVerboseObservation(t *testing.T) {
+	for _, event := range []string{"first-data", "idle", "resume"} {
+		t.Run(event, func(t *testing.T) {
+			state := &lifecycleState{started: time.Unix(0, 0)}
+			state.bytes.Store(7)
+			observed := hookContext{
+				event:                event,
+				bytes:                99,
+				durationMilliseconds: 123,
+			}
+
+			if got := hookContextForInvocation(state, event, observed, true); got != observed {
+				t.Fatalf("hook context = %#v, want observed context %#v", got, observed)
+			}
+		})
+	}
+}
+
 func TestLifecycleEventForHookName(t *testing.T) {
 	tests := map[string]string{
 		"on-ready":      "ready",
