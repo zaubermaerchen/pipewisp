@@ -100,9 +100,6 @@ func runWithOptions(opts options, in io.Reader, out io.Writer, diagnostics io.Wr
 	// public cleanup context before diagnostics, signal cancellation, or hook
 	// coordination can add time or allow more writes to finish.
 	shutdownContext := snapshotShutdownContext(state, done)
-	if opts.verbose {
-		reporter.event(shutdownContext)
-	}
 	if done.signal != nil {
 		if firstData != nil {
 			if firstData.cancel() {
@@ -112,6 +109,13 @@ func runWithOptions(opts options, in io.Reader, out io.Writer, diagnostics io.Wr
 			}
 		}
 		closeInput(in)
+	}
+	// Keep the snapshot above at the completion-selection point, but defer its
+	// record until an in-flight first-data hook has finished writing its own
+	// terminal and failure diagnostics. This preserves lifecycle output order
+	// without changing the context observed by the shutdown hook.
+	if opts.verbose {
+		reporter.event(shutdownContext)
 	}
 	if firstData != nil {
 		done.firstDataHookFailed = firstData.hookFailed()

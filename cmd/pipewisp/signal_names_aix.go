@@ -1,0 +1,56 @@
+//go:build aix
+
+package main
+
+// This file lists AIX signal names used by verbose diagnostics.
+
+import "syscall"
+
+var unixSignalNames = map[syscall.Signal]string{
+	syscall.SIGHUP:      "SIGHUP",
+	syscall.SIGINT:      "SIGINT",
+	syscall.SIGQUIT:     "SIGQUIT",
+	syscall.SIGILL:      "SIGILL",
+	syscall.SIGTRAP:     "SIGTRAP",
+	syscall.SIGABRT:     "SIGABRT",
+	syscall.SIGEMT:      "SIGEMT",
+	syscall.SIGFPE:      "SIGFPE",
+	syscall.SIGKILL:     "SIGKILL",
+	syscall.SIGBUS:      "SIGBUS",
+	syscall.SIGSEGV:     "SIGSEGV",
+	syscall.SIGSYS:      "SIGSYS",
+	syscall.SIGPIPE:     "SIGPIPE",
+	syscall.SIGALRM:     "SIGALRM",
+	syscall.SIGTERM:     "SIGTERM",
+	syscall.SIGURG:      "SIGURG",
+	syscall.SIGSTOP:     "SIGSTOP",
+	syscall.SIGTSTP:     "SIGTSTP",
+	syscall.SIGCONT:     "SIGCONT",
+	syscall.SIGCHLD:     "SIGCHLD",
+	syscall.SIGTTIN:     "SIGTTIN",
+	syscall.SIGTTOU:     "SIGTTOU",
+	syscall.SIGIO:       "SIGIO",
+	syscall.SIGXCPU:     "SIGXCPU",
+	syscall.SIGXFSZ:     "SIGXFSZ",
+	syscall.SIGWINCH:    "SIGWINCH",
+	syscall.SIGPWR:      "SIGPWR",
+	syscall.SIGUSR1:     "SIGUSR1",
+	syscall.SIGUSR2:     "SIGUSR2",
+	syscall.SIGPROF:     "SIGPROF",
+	syscall.SIGMSG:      "SIGMSG",
+	syscall.SIGDANGER:   "SIGDANGER",
+	syscall.SIGVTALRM:   "SIGVTALRM",
+	syscall.SIGMIGRATE:  "SIGMIGRATE",
+	syscall.SIGPRE:      "SIGPRE",
+	syscall.SIGVIRT:     "SIGVIRT",
+	syscall.SIGTALRM:    "SIGTALRM",
+	syscall.SIGWAITING:  "SIGWAITING",
+	syscall.SIGSYSERROR: "SIGSYSERROR",
+	syscall.SIGCAPI:     "SIGCAPI",
+	syscall.SIGRECONFIG: "SIGRECONFIG",
+	syscall.SIGCPUFAIL:  "SIGCPUFAIL",
+	syscall.SIGGRANT:    "SIGGRANT",
+	syscall.SIGRETRACT:  "SIGRETRACT",
+	syscall.SIGSOUND:    "SIGSOUND",
+	syscall.SIGSAK:      "SIGSAK",
+}

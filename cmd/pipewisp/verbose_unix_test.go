@@ -20,6 +20,7 @@ func TestVerboseCanonicalUnixSignals(t *testing.T) {
 		{signal: syscall.SIGINT, want: "SIGINT"},
 		{signal: syscall.SIGTERM, want: "SIGTERM"},
 		{signal: syscall.SIGPIPE, want: "SIGPIPE"},
+		{signal: syscall.SIGKILL, want: "SIGKILL"},
 		{signal: syscall.Signal(64), want: "unknown signal_number=64"},
 	}
 	for _, tt := range tests {
@@ -47,6 +48,18 @@ func TestVerboseIndependentSIGPIPEIsExitSignal(t *testing.T) {
 	}
 	got := diagnostics.String()
 	if !strings.Contains(got, "state=exit signal=SIGPIPE duration_ms=") {
+		t.Fatalf("diagnostics = %q", got)
+	}
+}
+
+func TestVerboseIndependentSIGKILLIsExitSignal(t *testing.T) {
+	var diagnostics bytes.Buffer
+	reporter := newVerboseReporter(&diagnostics, true)
+	if err := runHookWithContext("on-ready", "kill -KILL $$", hookContext{event: "ready"}, reporter); err == nil {
+		t.Fatal("SIGKILL hook unexpectedly succeeded")
+	}
+	got := diagnostics.String()
+	if !strings.Contains(got, "state=exit signal=SIGKILL duration_ms=") {
 		t.Fatalf("diagnostics = %q", got)
 	}
 }

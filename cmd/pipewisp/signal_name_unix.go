@@ -12,16 +12,10 @@ import (
 )
 
 func canonicalSignal(signal os.Signal) string {
-	if signal == syscall.SIGINT {
-		return "SIGINT"
-	}
-	if signal == syscall.SIGTERM {
-		return "SIGTERM"
-	}
-	if signal == syscall.SIGPIPE {
-		return "SIGPIPE"
-	}
 	if number, ok := signal.(syscall.Signal); ok {
+		if name, ok := unixSignalNames[number]; ok {
+			return name
+		}
 		return "unknown signal_number=" + strconv.Itoa(int(number))
 	}
 	return "unknown"
