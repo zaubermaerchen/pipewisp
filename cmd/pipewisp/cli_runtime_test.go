@@ -30,7 +30,7 @@ func TestRunCLIHelp(t *testing.T) {
 	if got := runCLI([]string{"--help"}, strings.NewReader("input"), &output, &diagnostics); got != 0 {
 		t.Fatalf("runCLI() exit code = %d, want 0", got)
 	}
-	if got, want := output.String(), "Usage: pipewisp [--verbose] [--on-ready COMMAND] [--on-first-data COMMAND] [--on-shutdown COMMAND] [--idle DURATION] [--on-idle COMMAND] [--on-resume COMMAND] [--hook-timeout DURATION] [--ignore-hook-errors]\n       pipewisp --version\n"; got != want {
+	if got, want := output.String(), "Usage: pipewisp [--name NAME] [--verbose] [--on-ready COMMAND] [--on-first-data COMMAND] [--on-shutdown COMMAND] [--idle DURATION] [--on-idle COMMAND] [--on-resume COMMAND] [--hook-timeout DURATION] [--ignore-hook-errors]\n       pipewisp --version\n"; got != want {
 		t.Fatalf("runCLI() output = %q, want %q", got, want)
 	}
 	if diagnostics.Len() != 0 {
