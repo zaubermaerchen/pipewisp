@@ -111,7 +111,7 @@ Exit status sections remain authoritative for exact behavior and precedence.
 
 ```text
 pipewisp --version
-pipewisp [--on-ready COMMAND] [--on-first-data COMMAND] [--on-shutdown COMMAND] [--idle DURATION] [--on-idle COMMAND] [--on-resume COMMAND] [--hook-timeout DURATION] [--ignore-hook-errors]
+pipewisp [--verbose] [--on-ready COMMAND] [--on-first-data COMMAND] [--on-shutdown COMMAND] [--idle DURATION] [--on-idle COMMAND] [--on-resume COMMAND] [--hook-timeout DURATION] [--ignore-hook-errors]
 ```
 
 Each hook option is optional and may be specified at most once. `--idle` is a
@@ -123,10 +123,19 @@ duration that bounds each lifecycle hook invocation (`--on-ready`,
 window starts for every invocation; when the option is omitted, hooks have no
 time limit. `--ignore-hook-errors` is a value-less opt-in flag; without it,
 hook failures remain strict and affect processing or final status as described
-below.
+below. `--verbose` is also value-less and writes lifecycle and hook diagnostics
+to stderr. It works without hooks, but does not enable idle mode or relax the
+requirement that `--idle` be accompanied by `--on-idle` or `--on-resume`.
+
+Only the exact `--verbose` token is accepted. Equals forms such as
+`--verbose=true` and `--verbose=` are unknown options, a following token in
+`--verbose false` remains an invalid positional argument, and duplicate use is
+an error. The `-v` short form is not supported.
 
 `--version` prints the build version (or `devel`) and exits without reading
-stdin or running hooks; it must be used alone. `-v` is not supported.
+stdin or running hooks; it must be used alone. Likewise, `-h` or `--help` must
+be used alone, so combining either standalone option with `--verbose` is an
+error.
 
 Pull-request release artifacts use `snapshot`, so their output may be
 `pipewisp snapshot`.
@@ -142,6 +151,7 @@ producer | pipewisp --idle 2s --on-idle 'printf "idle\\n"' --on-resume 'printf "
 producer | pipewisp --idle=250ms --on-idle='notify-idle'
 producer | pipewisp --hook-timeout=5s --on-ready 'prepare' --on-shutdown 'cleanup'
 producer | pipewisp --ignore-hook-errors --on-ready 'notify-start' --on-shutdown 'notify-stop'
+producer | pipewisp --verbose
 pipewisp --help
 ```
 
@@ -194,6 +204,96 @@ input, and an ignored `shutdown` failure preserves the result that caused cleanu
 to run. The option does not ignore handled signals, stdin read failures, stdout
 write failures (including broken pipe), or CLI/configuration errors.
 
+## Verbose diagnostics
+
+`--verbose` provides a human-readable view of lifecycle transitions and
+synchronous hook execution. All records go to stderr; passthrough stdout still
+contains only the original bytes, unchanged and in order. Lifecycle events are
+reported whether or not their corresponding hook is configured:
+
+```text
+pipewisp: type=event event=ready bytes=0 elapsed_ms=0
+pipewisp: type=event event=first-data bytes=0 elapsed_ms=125
+pipewisp: type=event event=idle bytes=4096 elapsed_ms=2134
+pipewisp: type=event event=resume bytes=4096 elapsed_ms=5271
+pipewisp: type=event event=shutdown reason=eof bytes=8192 elapsed_ms=6140
+```
+
+Idle and resume events are observed only when idle mode has been enabled by a
+valid idle or resume hook configuration. Once enabled, both transitions are
+reported when they occur, even if only one of those hooks is configured. A
+shutdown record includes `reason=eof`, `reason=signal`,
+`reason=broken-pipe`, or `reason=io-error` when that existing lifecycle reason
+applies; otherwise the field is omitted.
+
+When a hook is configured for an event, stderr follows this logical order:
+
+1. the lifecycle event record;
+2. the hook `state=start` record;
+3. stdout and stderr forwarded from the hook, in unspecified relative order;
+4. exactly one hook terminal record; and
+5. the existing hook-failure diagnostic, if the hook failed.
+
+Representative hook records are:
+
+```text
+pipewisp: type=hook event=idle state=start
+pipewisp: type=hook event=idle state=exit exit_code=0 duration_ms=6
+pipewisp: type=hook event=idle state=timeout duration_ms=5003
+pipewisp: type=hook event=idle state=interrupted signal=SIGTERM duration_ms=721
+pipewisp: type=hook event=idle state=error phase=start duration_ms=0
+pipewisp: type=hook event=idle state=exit signal=SIGTERM duration_ms=6
+```
+
+`exit` describes normal and non-zero process exits, and also a hook process
+that independently exits because of a signal. `timeout` means the configured
+hook deadline was observed. `interrupted` is reserved for a still-running hook
+that pipewisp stopped after accepting a handled signal. `error phase=start`
+means the hook process could not be started. Signal fields use canonical
+uppercase names such as `SIGINT`, `SIGTERM`, and `SIGPIPE`; an unknown numeric
+signal is reported as `signal=unknown signal_number=N`.
+
+Hook `duration_ms` is elapsed monotonic whole milliseconds, truncated rather
+than rounded. Measurement starts immediately before the process start attempt,
+after the start record has been written, and ends after completion handling and
+process reaping. It therefore includes `Wait`, timeout termination, and reap
+time, can exceed a configured timeout, and excludes the terminal-record write.
+A process-start failure is explicitly reported as zero.
+
+Hook stdout and stderr are forwarded unchanged. If their combined output is
+non-empty and does not end in a newline, verbose mode writes exactly one
+separating newline before the hook terminal record. It adds no separator after
+empty or already newline-terminated output. This separator exists only in
+verbose mode.
+
+Within v0.3, records use the field order shown above: lifecycle records use
+`type`, `event`, optional shutdown `reason`, `bytes`, `elapsed_ms`; hook records
+use `type`, `event`, `state`, then the outcome fields shown for that state.
+Optional fields are omitted. This deterministic order makes output convenient
+for humans and simple filtering, but verbose output is not a stable
+machine-readable compatibility interface. Later releases may change its
+fields, order, or vocabulary.
+
+Pipewisp-generated verbose writes are synchronous and best-effort. A write
+error or short write does not produce a recursive diagnostic or change
+passthrough data, lifecycle decisions, hook policy, or exit status. A slow or
+blocked stderr can nevertheless delay hooks, stream processing, signal
+observation, and later lifecycle snapshots, so verbose mode does not promise
+unchanged timing or throughput.
+
+On the normal copy path, verbose mode observes the first non-empty read before
+writing that data so it can report `first-data` at the correct boundary. This
+may disable source `WriterTo`, destination `ReaderFrom`, or operating-system
+zero-copy fast paths, and may change internal read/write counts and chunking.
+It still preserves output bytes and order, successful-byte accounting, error
+classification, lifecycle decisions, policy, and status. Without verbose mode
+and without a first-data hook, the existing fast path remains available.
+
+Verbose records do not alter `--ignore-hook-errors` or any existing lifecycle
+or exit-status rule. They deliberately exclude passthrough contents, individual
+reads and writes, hook command strings, complete hook environments, wall-clock
+timestamps, process IDs, and implementation details.
+
 Hooks inherit pipewisp's environment. For each hook, pipewisp replaces the
 following variables with a lifecycle snapshot (taken immediately before the
 hook, except that `shutdown` is frozen when stream completion is determined):
@@ -224,7 +324,7 @@ normal platform-specific meaning.
 | Cause | Status | Behavior |
 | --- | ---: | --- |
 | Normal EOF | 0 | Run `--on-shutdown`, if present. |
-| Downstream broken pipe (EPIPE) | 0 | Treat downstream closure as normal; run `--on-shutdown` and suppress the broken-pipe diagnostic. |
+| Downstream broken pipe (EPIPE) | 0 | Treat downstream closure as normal; run `--on-shutdown` and suppress the ordinary broken-pipe error diagnostic. With `--verbose`, emit the shutdown event with `reason=broken-pipe`. |
 | Other copy/I/O error | 1 | Report the error and run `--on-shutdown`, if present. |
 | `--on-ready` failure | 1 | Report the hook failure; do not copy data or run `--on-shutdown`. With `--ignore-hook-errors`, continue normally instead. |
 | `--on-first-data` failure | 1 | Report the hook failure, write the already-read first bytes unchanged, stop before reading more input, and run `--on-shutdown`, if present. With `--ignore-hook-errors`, continue reading after those bytes. |
@@ -241,7 +341,8 @@ reopen a closed pipe, or determine how an upstream producer reacts.
 ## Operational limits
 
 The interface has no configuration files, multiple hooks of the same lifecycle
-kind, verbose mode, or general hook-policy framework. Cleanup cannot run after
+kind, or general hook-policy framework. The `-v` short form remains unsupported.
+Cleanup cannot run after
 SIGKILL, an unrecoverable process crash, or power loss, because those
 conditions do not allow a user-space hook to execute.
 

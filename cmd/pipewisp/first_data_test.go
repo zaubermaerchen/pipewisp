@@ -13,7 +13,7 @@ func TestFirstDataReaderIgnoresEmptySuccessfulRead(t *testing.T) {
 		{data: []byte("input"), err: io.EOF},
 	}}
 	hookCalls := 0
-	reader := &firstDataReader{reader: source, hook: func() error {
+	reader := &firstDataReader{reader: source, hook: func(hookContext) error {
 		hookCalls++
 		return nil
 	}}
@@ -38,7 +38,7 @@ func TestFirstDataReaderRunsHookBeforeReadingAgain(t *testing.T) {
 		{data: []byte("a")},
 		{data: []byte("b"), err: io.EOF},
 	}}
-	reader := &firstDataReader{reader: source, hook: func() error {
+	reader := &firstDataReader{reader: source, hook: func(hookContext) error {
 		if source.reads != 1 {
 			t.Fatalf("source reads during hook = %d, want 1", source.reads)
 		}
