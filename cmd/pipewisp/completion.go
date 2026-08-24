@@ -142,11 +142,11 @@ func completionReason(done completion) string {
 	return "io-error"
 }
 
-func finishCompletion(done completion, runOff func() error, diagnostics io.Writer) int {
-	return finishCompletionWithTracker(done, runOff, diagnostics, nil)
+func finishCompletion(done completion, runShutdown func() error, diagnostics io.Writer) int {
+	return finishCompletionWithTracker(done, runShutdown, diagnostics, nil)
 }
 
-func finishCompletionWithTracker(done completion, runOff func() error, diagnostics io.Writer, tracker *signalTracker) int {
+func finishCompletionWithTracker(done completion, runShutdown func() error, diagnostics io.Writer, tracker *signalTracker) int {
 	if tracker != nil {
 		if sig := tracker.poll(); sig != nil {
 			done.signal = sig
@@ -154,18 +154,18 @@ func finishCompletionWithTracker(done completion, runOff func() error, diagnosti
 	}
 
 	kind := classifyCompletion(done)
-	var offErr error
+	var shutdownErr error
 	switch kind {
 	case completionCopyError:
 		reportCopyError(diagnostics, done.copyErr)
 	}
 
-	if runOff != nil {
-		offErr = runOff()
+	if runShutdown != nil {
+		shutdownErr = runShutdown()
 	}
 
 	if tracker != nil {
-		// Cleanup is synchronous, so recheck after off to catch a signal during the hook.
+		// Cleanup is synchronous, so recheck after shutdown to catch a signal during the hook.
 		if sig := tracker.poll(); sig != nil {
 			done.signal = sig
 		}
@@ -173,7 +173,7 @@ func finishCompletionWithTracker(done completion, runOff func() error, diagnosti
 	if classifyCompletion(done) == completionSignal {
 		return signalExitCode(done.signal)
 	}
-	if offErr != nil || kind == completionCopyError || done.firstDataHookFailed || done.idleErr != nil || done.resumeErr != nil {
+	if shutdownErr != nil || kind == completionCopyError || done.firstDataHookFailed || done.idleErr != nil || done.resumeErr != nil {
 		return 1
 	}
 	return 0

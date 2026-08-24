@@ -59,7 +59,7 @@ func TestClassifyCompletion(t *testing.T) {
 	}
 }
 
-func TestFinishCompletionRunsOffOnce(t *testing.T) {
+func TestFinishCompletionRunsShutdownOnce(t *testing.T) {
 	completions := []completion{
 		{},
 		{copyErr: errors.New("copy failed")},
@@ -74,7 +74,7 @@ func TestFinishCompletionRunsOffOnce(t *testing.T) {
 			return nil
 		}, &diagnostics)
 		if calls != 1 {
-			t.Errorf("finishCompletion() off calls = %d, want 1", calls)
+			t.Errorf("finishCompletion() shutdown calls = %d, want 1", calls)
 		}
 		if completion.signal != nil && status != 130 {
 			t.Errorf("finishCompletion() signal status = %d, want 130", status)
@@ -82,10 +82,10 @@ func TestFinishCompletionRunsOffOnce(t *testing.T) {
 	}
 }
 
-func TestFinishCompletionSignalStatusWinsOffFailure(t *testing.T) {
+func TestFinishCompletionSignalStatusWinsShutdownFailure(t *testing.T) {
 	var diagnostics bytes.Buffer
 	status := finishCompletion(completion{signal: os.Interrupt}, func() error {
-		err := errors.New("off failed")
+		err := errors.New("shutdown failed")
 		reportDiagnostic(&diagnostics, err)
 		return err
 	}, &diagnostics)
@@ -94,17 +94,17 @@ func TestFinishCompletionSignalStatusWinsOffFailure(t *testing.T) {
 		t.Fatalf("finishCompletion() status = %d, want 130", status)
 	}
 	if diagnostics.Len() == 0 {
-		t.Fatal("finishCompletion() diagnostics are empty, want off failure")
+		t.Fatal("finishCompletion() diagnostics are empty, want shutdown failure")
 	}
 }
 
-func TestFinishCompletionRecordsSignalDuringOff(t *testing.T) {
+func TestFinishCompletionRecordsSignalDuringShutdown(t *testing.T) {
 	signals := make(chan os.Signal, 1)
 	tracker := &signalTracker{signals: signals}
 	var diagnostics bytes.Buffer
 	status := finishCompletionWithTracker(completion{}, func() error {
 		signals <- os.Interrupt
-		return errors.New("off failed")
+		return errors.New("shutdown failed")
 	}, &diagnostics, tracker)
 
 	if status != 130 {

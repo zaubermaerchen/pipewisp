@@ -36,13 +36,13 @@ func runWithOptions(opts options, in io.Reader, out io.Writer, diagnostics io.Wr
 	state := newLifecycleState()
 	countedOut := state.writer(out)
 
-	// Subscribe before on so a signal during activation is retained for final status selection.
+	// Subscribe before ready so a signal during readiness is retained for final status selection.
 	tracker, stopSignals := subscribePassthroughSignals()
 	defer stopSignals()
 
 	var done completion
-	if opts.onSet {
-		if err := runHookWithContextAndTracker("on", opts.on, state.snapshot("on", ""), diagnostics, opts.hookTimeout, tracker, opts.ignoreHookErrors); err != nil {
+	if opts.onReadySet {
+		if err := runHookWithContextAndTracker("on-ready", opts.onReady, state.snapshot("ready", ""), diagnostics, opts.hookTimeout, tracker, opts.ignoreHookErrors); err != nil {
 			if sig := tracker.poll(); sig != nil {
 				done = completion{signal: sig}
 			} else {
@@ -53,9 +53,9 @@ func runWithOptions(opts options, in io.Reader, out io.Writer, diagnostics io.Wr
 
 	var firstData *firstDataReader
 	if done.signal != nil {
-		// Activation was interrupted; skip copying but still run cleanup.
+		// Readiness was interrupted; skip copying but still run cleanup.
 	} else if sig := tracker.poll(); sig != nil {
-		// Activation completed under interruption; skip copying but still proceed to optional cleanup.
+		// Readiness completed under interruption; skip copying but still proceed to optional cleanup.
 		done = completion{signal: sig}
 	} else if opts.idleSet {
 		done = runIdleCopyWithState(opts, in, countedOut, diagnostics, tracker, state)
@@ -79,12 +79,12 @@ func runWithOptions(opts options, in io.Reader, out io.Writer, diagnostics io.Wr
 		done = tracker.waitForCopy(copyDone)
 	}
 
-	var offContext hookContext
-	if opts.offSet {
+	var shutdownContext hookContext
+	if opts.onShutdownSet {
 		// Completion has now selected the lifecycle event and reason. Freeze the
 		// public cleanup context before signal cancellation or hook coordination
 		// can add time or allow more writes to finish.
-		offContext = snapshotOffContext(state, done)
+		shutdownContext = snapshotShutdownContext(state, done)
 	}
 	if done.signal != nil {
 		if firstData != nil {
@@ -100,13 +100,13 @@ func runWithOptions(opts options, in io.Reader, out io.Writer, diagnostics io.Wr
 		done.firstDataHookFailed = firstData.hookFailed()
 	}
 
-	var runOff func() error
-	if opts.offSet {
-		runOff = func() error {
-			return runHookWithContextAndTracker("off", opts.off, offContext, diagnostics, opts.hookTimeout, tracker, opts.ignoreHookErrors)
+	var runShutdown func() error
+	if opts.onShutdownSet {
+		runShutdown = func() error {
+			return runHookWithContextAndTracker("on-shutdown", opts.onShutdown, shutdownContext, diagnostics, opts.hookTimeout, tracker, opts.ignoreHookErrors)
 		}
 	}
-	return finishCompletionWithTracker(done, runOff, diagnostics, tracker)
+	return finishCompletionWithTracker(done, runShutdown, diagnostics, tracker)
 }
 
 func closeInput(in io.Reader) {
@@ -116,8 +116,8 @@ func closeInput(in io.Reader) {
 	}
 }
 
-func snapshotOffContext(state *lifecycleState, done completion) hookContext {
-	return state.snapshot("off", completionReason(done))
+func snapshotShutdownContext(state *lifecycleState, done completion) hookContext {
+	return state.snapshot("shutdown", completionReason(done))
 }
 
 func reportDiagnostic(diagnostics io.Writer, err error) {

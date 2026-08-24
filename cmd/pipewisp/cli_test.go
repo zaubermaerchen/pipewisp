@@ -21,8 +21,8 @@ func TestParseArgs(t *testing.T) {
 		},
 		{
 			name: "both hooks",
-			args: []string{"--on", "prepare", "--off", "cleanup"},
-			want: options{on: "prepare", onSet: true, off: "cleanup", offSet: true},
+			args: []string{"--on-ready", "prepare", "--on-shutdown", "cleanup"},
+			want: options{onReady: "prepare", onReadySet: true, onShutdown: "cleanup", onShutdownSet: true},
 		},
 		{
 			name: "first-data hook separated",
@@ -31,8 +31,8 @@ func TestParseArgs(t *testing.T) {
 		},
 		{
 			name: "equals form",
-			args: []string{"--on=prepare", "--on-first-data=observe", "--off=cleanup"},
-			want: options{on: "prepare", onSet: true, onFirstData: "observe", onFirstDataSet: true, off: "cleanup", offSet: true},
+			args: []string{"--on-ready=prepare", "--on-first-data=observe", "--on-shutdown=cleanup"},
+			want: options{onReady: "prepare", onReadySet: true, onFirstData: "observe", onFirstDataSet: true, onShutdown: "cleanup", onShutdownSet: true},
 		},
 		{
 			name: "hook timeout separated",
@@ -46,14 +46,14 @@ func TestParseArgs(t *testing.T) {
 		},
 		{
 			name: "all lifecycle options",
-			args: []string{"--on", "prepare", "--on-first-data", "observe", "--off", "cleanup", "--idle", "25ms", "--on-idle", "idle", "--on-resume", "resume"},
+			args: []string{"--on-ready", "prepare", "--on-first-data", "observe", "--on-shutdown", "cleanup", "--idle", "25ms", "--on-idle", "idle", "--on-resume", "resume"},
 			want: options{
-				on:             "prepare",
-				onSet:          true,
+				onReady:        "prepare",
+				onReadySet:     true,
 				onFirstData:    "observe",
 				onFirstDataSet: true,
-				off:            "cleanup",
-				offSet:         true,
+				onShutdown:     "cleanup",
+				onShutdownSet:  true,
 				idle:           25 * time.Millisecond,
 				idleSet:        true,
 				onIdle:         "idle",
@@ -118,18 +118,18 @@ func TestParseRejectsInvalidArguments(t *testing.T) {
 	}{
 		{
 			name:    "duplicate on separated",
-			args:    []string{"--on", "first", "--on", "second"},
-			message: "--on specified more than once",
+			args:    []string{"--on-ready", "first", "--on-ready", "second"},
+			message: "--on-ready specified more than once",
 		},
 		{
 			name:    "duplicate on equals",
-			args:    []string{"--on", "first", "--on=second"},
-			message: "--on specified more than once",
+			args:    []string{"--on-ready", "first", "--on-ready=second"},
+			message: "--on-ready specified more than once",
 		},
 		{
-			name:    "duplicate off",
-			args:    []string{"--off=first", "--off", "second"},
-			message: "--off specified more than once",
+			name:    "duplicate shutdown",
+			args:    []string{"--on-shutdown=first", "--on-shutdown", "second"},
+			message: "--on-shutdown specified more than once",
 		},
 		{
 			name:    "duplicate first-data separated",
@@ -152,14 +152,19 @@ func TestParseRejectsInvalidArguments(t *testing.T) {
 			message: "--hook-timeout specified more than once",
 		},
 		{
-			name:    "missing on value",
-			args:    []string{"--on"},
-			message: "missing value for --on",
+			name:    "missing ready value",
+			args:    []string{"--on-ready"},
+			message: "missing value for --on-ready",
 		},
 		{
-			name:    "missing off value before another option",
-			args:    []string{"--off", "--on", "prepare"},
-			message: "missing value for --off",
+			name:    "missing ready value before another option",
+			args:    []string{"--on-ready", "--on-shutdown", "cleanup"},
+			message: "missing value for --on-ready",
+		},
+		{
+			name:    "missing shutdown value before another option",
+			args:    []string{"--on-shutdown", "--on-ready", "prepare"},
+			message: "missing value for --on-shutdown",
 		},
 		{
 			name:    "missing first-data value",
@@ -168,7 +173,7 @@ func TestParseRejectsInvalidArguments(t *testing.T) {
 		},
 		{
 			name:    "missing first-data value before another option",
-			args:    []string{"--on-first-data", "--on", "prepare"},
+			args:    []string{"--on-first-data", "--on-ready", "prepare"},
 			message: "missing value for --on-first-data",
 		},
 		{
@@ -178,7 +183,7 @@ func TestParseRejectsInvalidArguments(t *testing.T) {
 		},
 		{
 			name:    "missing hook timeout value before another option",
-			args:    []string{"--hook-timeout", "--on", "prepare"},
+			args:    []string{"--hook-timeout", "--on-ready", "prepare"},
 			message: "missing value for --hook-timeout",
 		},
 		{
@@ -203,13 +208,23 @@ func TestParseRejectsInvalidArguments(t *testing.T) {
 		},
 		{
 			name:    "empty on equals value",
-			args:    []string{"--on="},
-			message: "empty command for --on",
+			args:    []string{"--on-ready="},
+			message: "empty command for --on-ready",
 		},
 		{
-			name:    "empty off separated value",
-			args:    []string{"--off", ""},
-			message: "empty command for --off",
+			name:    "empty ready separated value",
+			args:    []string{"--on-ready", ""},
+			message: "empty command for --on-ready",
+		},
+		{
+			name:    "empty shutdown separated value",
+			args:    []string{"--on-shutdown", ""},
+			message: "empty command for --on-shutdown",
+		},
+		{
+			name:    "empty shutdown equals value",
+			args:    []string{"--on-shutdown="},
+			message: "empty command for --on-shutdown",
 		},
 		{
 			name:    "empty first-data equals value",
@@ -222,9 +237,29 @@ func TestParseRejectsInvalidArguments(t *testing.T) {
 			message: "empty command for --on-first-data",
 		},
 		{
-			name:    "whitespace on separated value",
-			args:    []string{"--on", " \t"},
-			message: "empty command for --on",
+			name:    "whitespace ready separated value",
+			args:    []string{"--on-ready", " \t"},
+			message: "empty command for --on-ready",
+		},
+		{
+			name:    "old ready option rejected",
+			args:    []string{"--on", "prepare"},
+			message: "unknown option --on",
+		},
+		{
+			name:    "old ready equals option rejected",
+			args:    []string{"--on=prepare"},
+			message: "unknown option --on=prepare",
+		},
+		{
+			name:    "old shutdown option rejected",
+			args:    []string{"--off", "cleanup"},
+			message: "unknown option --off",
+		},
+		{
+			name:    "old shutdown equals option rejected",
+			args:    []string{"--off=cleanup"},
+			message: "unknown option --off=cleanup",
 		},
 		{
 			name:    "unknown long option",
@@ -243,12 +278,12 @@ func TestParseRejectsInvalidArguments(t *testing.T) {
 		},
 		{
 			name:    "help with another argument",
-			args:    []string{"--help", "--on", "prepare"},
+			args:    []string{"--help", "--on-ready", "prepare"},
 			message: "--help cannot be combined",
 		},
 		{
 			name:    "version with another argument",
-			args:    []string{"--version", "--on", "prepare"},
+			args:    []string{"--version", "--on-ready", "prepare"},
 			message: "--version cannot be combined",
 		},
 		{

@@ -19,8 +19,8 @@ func newLifecycleState() *lifecycleState {
 
 func (state *lifecycleState) snapshot(event, reason string) hookContext {
 	durationMilliseconds := int64(time.Since(state.started) / time.Millisecond)
-	if event == "on" {
-		// Activation is the lifecycle origin, so its snapshot is deliberately
+	if event == "ready" {
+		// Readiness is the lifecycle origin, so its snapshot is deliberately
 		// stable even if process startup takes a measurable amount of time.
 		durationMilliseconds = 0
 	}

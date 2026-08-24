@@ -11,12 +11,12 @@ import (
 
 type options struct {
 	showVersion      bool
-	on               string
-	onSet            bool
+	onReady          string
+	onReadySet       bool
 	onFirstData      string
 	onFirstDataSet   bool
-	off              string
-	offSet           bool
+	onShutdown       string
+	onShutdownSet    bool
 	idle             time.Duration
 	idleSet          bool
 	hookTimeout      time.Duration
@@ -44,25 +44,25 @@ func parseArgs(args []string) (options, bool, error) {
 				return options{}, false, fmt.Errorf("%s cannot be combined with other arguments", arg)
 			}
 			return options{}, true, nil
-		case arg == "--on":
-			if opts.onSet {
-				return options{}, false, fmt.Errorf("--on specified more than once")
+		case arg == "--on-ready":
+			if opts.onReadySet {
+				return options{}, false, fmt.Errorf("--on-ready specified more than once")
 			}
-			value, next, err := parseSeparateValue(args, i, "--on")
+			value, next, err := parseSeparateValue(args, i, "--on-ready")
 			if err != nil {
 				return options{}, false, err
 			}
-			opts.on, opts.onSet = value, true
+			opts.onReady, opts.onReadySet = value, true
 			i = next
-		case strings.HasPrefix(arg, "--on="):
-			if opts.onSet {
-				return options{}, false, fmt.Errorf("--on specified more than once")
+		case strings.HasPrefix(arg, "--on-ready="):
+			if opts.onReadySet {
+				return options{}, false, fmt.Errorf("--on-ready specified more than once")
 			}
-			value, err := validateCommand(arg[len("--on="):], "--on")
+			value, err := validateCommand(arg[len("--on-ready="):], "--on-ready")
 			if err != nil {
 				return options{}, false, err
 			}
-			opts.on, opts.onSet = value, true
+			opts.onReady, opts.onReadySet = value, true
 		case arg == "--on-first-data":
 			if opts.onFirstDataSet {
 				return options{}, false, fmt.Errorf("--on-first-data specified more than once")
@@ -82,25 +82,25 @@ func parseArgs(args []string) (options, bool, error) {
 				return options{}, false, err
 			}
 			opts.onFirstData, opts.onFirstDataSet = value, true
-		case arg == "--off":
-			if opts.offSet {
-				return options{}, false, fmt.Errorf("--off specified more than once")
+		case arg == "--on-shutdown":
+			if opts.onShutdownSet {
+				return options{}, false, fmt.Errorf("--on-shutdown specified more than once")
 			}
-			value, next, err := parseSeparateValue(args, i, "--off")
+			value, next, err := parseSeparateValue(args, i, "--on-shutdown")
 			if err != nil {
 				return options{}, false, err
 			}
-			opts.off, opts.offSet = value, true
+			opts.onShutdown, opts.onShutdownSet = value, true
 			i = next
-		case strings.HasPrefix(arg, "--off="):
-			if opts.offSet {
-				return options{}, false, fmt.Errorf("--off specified more than once")
+		case strings.HasPrefix(arg, "--on-shutdown="):
+			if opts.onShutdownSet {
+				return options{}, false, fmt.Errorf("--on-shutdown specified more than once")
 			}
-			value, err := validateCommand(arg[len("--off="):], "--off")
+			value, err := validateCommand(arg[len("--on-shutdown="):], "--on-shutdown")
 			if err != nil {
 				return options{}, false, err
 			}
-			opts.off, opts.offSet = value, true
+			opts.onShutdown, opts.onShutdownSet = value, true
 		case arg == "--hook-timeout":
 			if opts.hookTimeoutSet {
 				return options{}, false, fmt.Errorf("--hook-timeout specified more than once")
@@ -254,5 +254,5 @@ func validateCommand(command, option string) (string, error) {
 }
 
 func printUsage(out io.Writer) {
-	_, _ = out.Write([]byte("Usage: pipewisp [--on COMMAND] [--on-first-data COMMAND] [--off COMMAND] [--idle DURATION] [--on-idle COMMAND] [--on-resume COMMAND] [--hook-timeout DURATION] [--ignore-hook-errors]\n       pipewisp --version\n"))
+	_, _ = out.Write([]byte("Usage: pipewisp [--on-ready COMMAND] [--on-first-data COMMAND] [--on-shutdown COMMAND] [--idle DURATION] [--on-idle COMMAND] [--on-resume COMMAND] [--hook-timeout DURATION] [--ignore-hook-errors]\n       pipewisp --version\n"))
 }

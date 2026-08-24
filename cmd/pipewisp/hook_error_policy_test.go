@@ -36,14 +36,14 @@ func TestParseRejectsDuplicateIgnoreHookErrors(t *testing.T) {
 	}
 }
 
-func TestIgnoreOnFailureContinuesLifecycle(t *testing.T) {
+func TestIgnoreReadyFailureContinuesLifecycle(t *testing.T) {
 	var output bytes.Buffer
 	var diagnostics bytes.Buffer
 	config := options{
-		on:               failingHookCommand("on"),
-		onSet:            true,
-		off:              hookOutputCommand("off"),
-		offSet:           true,
+		onReady:          failingHookCommand("ready"),
+		onReadySet:       true,
+		onShutdown:       hookOutputCommand("shutdown"),
+		onShutdownSet:    true,
 		ignoreHookErrors: true,
 	}
 
@@ -53,8 +53,8 @@ func TestIgnoreOnFailureContinuesLifecycle(t *testing.T) {
 	if got, want := output.String(), "input"; got != want {
 		t.Fatalf("output = %q, want %q", got, want)
 	}
-	if got := diagnostics.String(); !strings.Contains(got, "on hook failed") || !strings.Contains(got, "off") {
-		t.Fatalf("diagnostics = %q, want on failure and off output", got)
+	if got := diagnostics.String(); !strings.Contains(got, "pipewisp: on-ready hook failed:") || !strings.Contains(got, "shutdown") {
+		t.Fatalf("diagnostics = %q, want ready failure and shutdown output", got)
 	}
 }
 
@@ -113,21 +113,21 @@ func TestIgnoreIdleAndResumeFailuresKeepFinalStatusSuccessful(t *testing.T) {
 	}
 }
 
-func TestIgnoreOffFailurePreservesLifecycleResult(t *testing.T) {
+func TestIgnoreShutdownFailurePreservesLifecycleResult(t *testing.T) {
 	t.Run("normal eof", func(t *testing.T) {
 		var output bytes.Buffer
 		var diagnostics bytes.Buffer
 		config := options{
-			off:              failingHookCommand("off"),
-			offSet:           true,
+			onShutdown:       failingHookCommand("shutdown"),
+			onShutdownSet:    true,
 			ignoreHookErrors: true,
 		}
 
 		if got := runWithOptions(config, strings.NewReader("input"), &output, &diagnostics); got != 0 {
 			t.Fatalf("runWithOptions() exit code = %d, want 0; diagnostics = %q", got, diagnostics.String())
 		}
-		if !strings.Contains(diagnostics.String(), "off hook failed") {
-			t.Fatalf("diagnostics = %q, want off failure", diagnostics.String())
+		if !strings.Contains(diagnostics.String(), "pipewisp: on-shutdown hook failed:") {
+			t.Fatalf("diagnostics = %q, want shutdown failure", diagnostics.String())
 		}
 	})
 
@@ -135,26 +135,26 @@ func TestIgnoreOffFailurePreservesLifecycleResult(t *testing.T) {
 		wantErr := errors.New("output unavailable")
 		var diagnostics bytes.Buffer
 		config := options{
-			off:              failingHookCommand("off"),
-			offSet:           true,
+			onShutdown:       failingHookCommand("shutdown"),
+			onShutdownSet:    true,
 			ignoreHookErrors: true,
 		}
 
 		if got := runWithOptions(config, strings.NewReader("input"), errorWriter{err: wantErr}, &diagnostics); got != 1 {
 			t.Fatalf("runWithOptions() exit code = %d, want 1; diagnostics = %q", got, diagnostics.String())
 		}
-		if got := diagnostics.String(); !strings.Contains(got, wantErr.Error()) || !strings.Contains(got, "off hook failed") {
-			t.Fatalf("diagnostics = %q, want copy error and off failure", got)
+		if got := diagnostics.String(); !strings.Contains(got, wantErr.Error()) || !strings.Contains(got, "pipewisp: on-shutdown hook failed:") {
+			t.Fatalf("diagnostics = %q, want copy error and shutdown failure", got)
 		}
 	})
 }
 
-func TestIgnoreHookTimeoutContinuesLifecycle(t *testing.T) {
+func TestIgnoreReadyHookTimeoutContinuesLifecycle(t *testing.T) {
 	var output bytes.Buffer
 	var diagnostics bytes.Buffer
 	config := options{
-		on:               hookSleepCommand(time.Second),
-		onSet:            true,
+		onReady:          hookSleepCommand(time.Second),
+		onReadySet:       true,
 		hookTimeout:      20 * time.Millisecond,
 		hookTimeoutSet:   true,
 		ignoreHookErrors: true,
@@ -166,7 +166,7 @@ func TestIgnoreHookTimeoutContinuesLifecycle(t *testing.T) {
 	if got, want := output.String(), "input"; got != want {
 		t.Fatalf("output = %q, want %q", got, want)
 	}
-	if got := diagnostics.String(); !strings.Contains(got, "on hook failed") || !strings.Contains(got, "timed out") {
+	if got := diagnostics.String(); !strings.Contains(got, "pipewisp: on-ready hook failed:") || !strings.Contains(got, "timed out") {
 		t.Fatalf("diagnostics = %q, want hook failure and timeout", got)
 	}
 }
