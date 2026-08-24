@@ -14,6 +14,7 @@ import (
 type verboseReporter struct {
 	out       io.Writer
 	enabled   bool
+	prefix    string
 	mu        sync.Mutex
 	lineStart bool
 }
@@ -21,7 +22,15 @@ type verboseReporter struct {
 const verbosePrefix = "pipewisp: "
 
 func newVerboseReporter(out io.Writer, enabled bool) *verboseReporter {
-	return &verboseReporter{out: out, enabled: enabled, lineStart: true}
+	return newNamedVerboseReporter(out, "", enabled)
+}
+
+func newNamedVerboseReporter(out io.Writer, name string, enabled bool) *verboseReporter {
+	prefix := verbosePrefix
+	if name != "" {
+		prefix = "pipewisp[" + name + "]: "
+	}
+	return &verboseReporter{out: out, enabled: enabled, prefix: prefix, lineStart: true}
 }
 
 func (r *verboseReporter) Write(p []byte) (int, error) {
@@ -38,10 +47,18 @@ func (r *verboseReporter) diagnostic(format string, args ...any) {
 	if !r.enabled {
 		return
 	}
-	line := fmt.Sprintf(verbosePrefix+format+"\n", args...)
+	r.writeDiagnostic(format, args...)
+}
+
+func (r *verboseReporter) report(err error) {
+	r.writeDiagnostic("%v", err)
+}
+
+func (r *verboseReporter) writeDiagnostic(format string, args ...any) {
+	line := r.prefix + fmt.Sprintf(format+"\n", args...)
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if !r.lineStart {
+	if r.enabled && !r.lineStart {
 		_, _ = io.WriteString(r.out, "\n")
 	}
 	_, _ = io.WriteString(r.out, line)

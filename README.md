@@ -111,7 +111,7 @@ Exit status sections remain authoritative for exact behavior and precedence.
 
 ```text
 pipewisp --version
-pipewisp [--verbose] [--on-ready COMMAND] [--on-first-data COMMAND] [--on-shutdown COMMAND] [--idle DURATION] [--on-idle COMMAND] [--on-resume COMMAND] [--hook-timeout DURATION] [--ignore-hook-errors]
+pipewisp [--name NAME] [--verbose] [--on-ready COMMAND] [--on-first-data COMMAND] [--on-shutdown COMMAND] [--idle DURATION] [--on-idle COMMAND] [--on-resume COMMAND] [--hook-timeout DURATION] [--ignore-hook-errors]
 ```
 
 Each hook option is optional and may be specified at most once. `--idle` is a
@@ -126,6 +126,22 @@ hook failures remain strict and affect processing or final status as described
 below. `--verbose` is also value-less and writes lifecycle and hook diagnostics
 to stderr. It works without hooks, but does not enable idle mode or relax the
 requirement that `--idle` be accompanied by `--on-idle` or `--on-resume`.
+
+`--name` assigns a human-readable identity to this pipewisp instance. Runtime
+diagnostics use `pipewisp[NAME]:` instead of `pipewisp:`, but the option does
+not enable verbose mode or otherwise add diagnostics. Both `--name NAME` and
+`--name=NAME` are accepted. A name beginning with `-` must use the equals form,
+for example `--name=-relay`; in the separated form, a token beginning with `-`
+is treated as a missing value. Duplicate use, including mixed forms, is an
+error.
+
+Names must be valid UTF-8 and contain at least one non-whitespace Unicode code
+point. Unicode control characters (`Cc`), line and paragraph separators (`Zl`
+and `Zp`), Unicode bidi control characters (U+061C, U+200E–U+200F,
+U+202A–U+202E, and U+2066–U+2069), and `[` or `]` are rejected. Other Unicode
+text is preserved without normalization, including embedded whitespace,
+Japanese text, emoji, and zero-width-joiner emoji sequences. There is no
+pipewisp-specific length limit beyond the operating system's argument limit.
 
 Only the exact `--verbose` token is accepted. Equals forms such as
 `--verbose=true` and `--verbose=` are unknown options, a following token in
@@ -152,12 +168,15 @@ producer | pipewisp --idle=250ms --on-idle='notify-idle'
 producer | pipewisp --hook-timeout=5s --on-ready 'prepare' --on-shutdown 'cleanup'
 producer | pipewisp --ignore-hook-errors --on-ready 'notify-start' --on-shutdown 'notify-stop'
 producer | pipewisp --verbose
+producer | pipewisp --name relay --verbose | pipewisp --name notify --verbose
 pipewisp --help
 ```
 
 Duplicate options, unknown options, missing or empty commands or durations,
-non-positive or invalid durations, invalid idle-hook combinations, and
-positional arguments are errors. `--on-first-data` is independent of
+invalid names, non-positive or invalid durations, invalid idle-hook
+combinations, and positional arguments are errors. CLI parse and validation
+diagnostics retain the ordinary `pipewisp:` prefix even when a valid `--name`
+appears elsewhere in the arguments. `--on-first-data` is independent of
 `--on-ready`, `--on-shutdown`, and idle mode; all lifecycle options may be used
 together. The former `--on` and `--off` forms are not aliases and are rejected
 as unknown options.
@@ -218,6 +237,18 @@ pipewisp: type=event event=idle bytes=4096 elapsed_ms=2134
 pipewisp: type=event event=resume bytes=4096 elapsed_ms=5271
 pipewisp: type=event event=shutdown reason=eof bytes=8192 elapsed_ms=6140
 ```
+
+When `--name relay` is configured, every pipewisp-generated runtime record and
+error uses the named source prefix, for example:
+
+```text
+pipewisp[relay]: type=event event=idle bytes=4096 elapsed_ms=2134
+pipewisp[relay]: on-idle hook failed: exit status 1
+```
+
+Without `--name`, the existing `pipewisp:` prefix is unchanged. Hook stdout and
+stderr are never given either prefix; they retain the forwarding behavior
+described below.
 
 Idle and resume events are observed only when idle mode has been enabled by a
 valid idle or resume hook configuration. Once enabled, both transitions are
@@ -314,6 +345,10 @@ later can change pipewisp's final exit status, but does not change the `shutdown
 event, reason, byte count, or duration; cleanup time is not added to that
 snapshot. Ignoring a hook failure does not create or rewrite a lifecycle
 completion reason.
+
+`--name` does not add, replace, or remove `PIPEWISP_NAME` in hook environments.
+If the parent environment already defines `PIPEWISP_NAME`, hooks inherit that
+value unchanged; it is not replaced with the configured instance name.
 
 All lifecycle hook options execute their command through a shell. Do not pass
 untrusted or unsanitized command strings: shell metacharacters have their

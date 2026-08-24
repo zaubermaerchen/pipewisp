@@ -35,8 +35,8 @@ func run(in io.Reader, out io.Writer, diagnostics io.Writer) int {
 func runWithOptions(opts options, in io.Reader, out io.Writer, diagnostics io.Writer) int {
 	state := newLifecycleState()
 	countedOut := state.writer(out)
-	reporter := newVerboseReporter(diagnostics, opts.verbose)
-	if opts.verbose {
+	reporter := newNamedVerboseReporter(diagnostics, opts.name, opts.verbose)
+	if opts.verbose || opts.nameSet {
 		diagnostics = reporter
 	}
 
@@ -149,5 +149,9 @@ func hookContextForInvocation(state *lifecycleState, event string, observed hook
 }
 
 func reportDiagnostic(diagnostics io.Writer, err error) {
+	if reporter := verboseForWriter(diagnostics); reporter != nil {
+		reporter.report(err)
+		return
+	}
 	_, _ = fmt.Fprintf(diagnostics, "pipewisp: %v\n", err)
 }

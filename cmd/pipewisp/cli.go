@@ -7,9 +7,13 @@ import (
 	"io"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 )
 
 type options struct {
+	name             string
+	nameSet          bool
 	showVersion      bool
 	verbose          bool
 	onReady          string
@@ -45,6 +49,25 @@ func parseArgs(args []string) (options, bool, error) {
 				return options{}, false, fmt.Errorf("--verbose specified more than once")
 			}
 			opts.verbose = true
+		case arg == "--name":
+			if opts.nameSet {
+				return options{}, false, fmt.Errorf("--name specified more than once")
+			}
+			value, next, err := parseSeparateName(args, i)
+			if err != nil {
+				return options{}, false, err
+			}
+			opts.name, opts.nameSet = value, true
+			i = next
+		case strings.HasPrefix(arg, "--name="):
+			if opts.nameSet {
+				return options{}, false, fmt.Errorf("--name specified more than once")
+			}
+			value, err := validateName(arg[len("--name="):])
+			if err != nil {
+				return options{}, false, err
+			}
+			opts.name, opts.nameSet = value, true
 		case arg == "-h" || arg == "--help":
 			if len(args) != 1 {
 				return options{}, false, fmt.Errorf("%s cannot be combined with other arguments", arg)
@@ -226,6 +249,18 @@ func parseSeparateValue(args []string, optionIndex int, option string) (string, 
 	return value, valueIndex, nil
 }
 
+func parseSeparateName(args []string, optionIndex int) (string, int, error) {
+	valueIndex := optionIndex + 1
+	if valueIndex >= len(args) || strings.HasPrefix(args[valueIndex], "-") {
+		return "", optionIndex, fmt.Errorf("missing value for --name")
+	}
+	value, err := validateName(args[valueIndex])
+	if err != nil {
+		return "", optionIndex, err
+	}
+	return value, valueIndex, nil
+}
+
 func parseSeparateDuration(args []string, optionIndex int, option string) (time.Duration, int, error) {
 	valueIndex := optionIndex + 1
 	if valueIndex >= len(args) {
@@ -259,6 +294,41 @@ func validateCommand(command, option string) (string, error) {
 	return command, nil
 }
 
+func validateName(name string) (string, error) {
+	if !utf8.ValidString(name) {
+		return "", fmt.Errorf("invalid UTF-8 name for --name")
+	}
+	if name == "" || !hasNonWhitespaceRune(name) {
+		return "", fmt.Errorf("empty name for --name")
+	}
+	for _, r := range name {
+		if unicode.IsControl(r) || unicode.In(r, unicode.Zl, unicode.Zp) || isBidiControl(r) || r == '[' || r == ']' {
+			return "", fmt.Errorf("invalid name for --name")
+		}
+	}
+	return name, nil
+}
+
+func hasNonWhitespaceRune(value string) bool {
+	for _, r := range value {
+		if !unicode.IsSpace(r) {
+			return true
+		}
+	}
+	return false
+}
+
+func isBidiControl(r rune) bool {
+	switch r {
+	case '\u061c', '\u200e', '\u200f',
+		'\u202a', '\u202b', '\u202c', '\u202d', '\u202e',
+		'\u2066', '\u2067', '\u2068', '\u2069':
+		return true
+	default:
+		return false
+	}
+}
+
 func printUsage(out io.Writer) {
-	_, _ = out.Write([]byte("Usage: pipewisp [--verbose] [--on-ready COMMAND] [--on-first-data COMMAND] [--on-shutdown COMMAND] [--idle DURATION] [--on-idle COMMAND] [--on-resume COMMAND] [--hook-timeout DURATION] [--ignore-hook-errors]\n       pipewisp --version\n"))
+	_, _ = out.Write([]byte("Usage: pipewisp [--name NAME] [--verbose] [--on-ready COMMAND] [--on-first-data COMMAND] [--on-shutdown COMMAND] [--idle DURATION] [--on-idle COMMAND] [--on-resume COMMAND] [--hook-timeout DURATION] [--ignore-hook-errors]\n       pipewisp --version\n"))
 }
