@@ -72,17 +72,20 @@ func runWithOptions(opts options, in io.Reader, out io.Writer, diagnostics io.Wr
 			firstData = &firstDataReader{
 				reader:   in,
 				finished: make(chan struct{}),
-				event: func() hookContext {
-					context := state.snapshot("first-data", "")
-					reporter.event(context)
-					return context
-				},
 				hook: func(context hookContext) error {
 					if !opts.onFirstDataSet {
 						return nil
 					}
+					context = hookContextForInvocation(state, "first-data", context, opts.verbose)
 					return runHookWithContextAndTracker("on-first-data", opts.onFirstData, context, diagnostics, opts.hookTimeout, tracker, opts.ignoreHookErrors)
 				},
+			}
+			if opts.verbose {
+				firstData.event = func() hookContext {
+					context := state.snapshot("first-data", "")
+					reporter.event(context)
+					return context
+				}
 			}
 			input = firstData
 		}
@@ -132,6 +135,13 @@ func closeInput(in io.Reader) {
 
 func snapshotShutdownContext(state *lifecycleState, done completion) hookContext {
 	return state.snapshot("shutdown", completionReason(done))
+}
+
+func hookContextForInvocation(state *lifecycleState, event string, observed hookContext, verbose bool) hookContext {
+	if verbose {
+		return observed
+	}
+	return state.snapshot(event, "")
 }
 
 func reportDiagnostic(diagnostics io.Writer, err error) {

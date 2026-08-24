@@ -275,9 +275,11 @@ func (runner *idleCopyRunner) handleRead(result idleReadResult) bool {
 		firstDataPending := runner.opts.onFirstDataSet && !runner.firstDataSeen
 		if !runner.firstDataSeen {
 			runner.firstDataSeen = true
-			runner.eventContext = runner.state.snapshot("first-data", "")
-			if reporter := verboseForWriter(runner.diagnostics); reporter != nil {
-				reporter.event(runner.eventContext)
+			if runner.opts.verbose {
+				runner.eventContext = runner.state.snapshot("first-data", "")
+				if reporter := verboseForWriter(runner.diagnostics); reporter != nil {
+					reporter.event(runner.eventContext)
+				}
 			}
 		}
 		if firstDataPending {
@@ -289,9 +291,12 @@ func (runner *idleCopyRunner) handleRead(result idleReadResult) bool {
 			}
 		}
 		if runner.idle && !firstDataPending {
-			resumeContext := runner.state.snapshot("resume", "")
-			if reporter := verboseForWriter(runner.diagnostics); reporter != nil {
-				reporter.event(resumeContext)
+			var resumeContext hookContext
+			if runner.opts.verbose {
+				resumeContext = runner.state.snapshot("resume", "")
+				if reporter := verboseForWriter(runner.diagnostics); reporter != nil {
+					reporter.event(resumeContext)
+				}
 			}
 			// A resume hook is part of the transition into active mode. A
 			// failed hook does not roll back the transition or discard data.
@@ -300,6 +305,7 @@ func (runner *idleCopyRunner) handleRead(result idleReadResult) bool {
 					runner.abortForSignal(sig)
 					return false
 				}
+				resumeContext = hookContextForInvocation(runner.state, "resume", resumeContext, runner.opts.verbose)
 				if err := runHookWithContextAndTracker("on-resume", runner.opts.onResume, resumeContext, runner.diagnostics, runner.opts.hookTimeout, runner.tracker, runner.opts.ignoreHookErrors); err != nil {
 					runner.done.resumeErr = err
 				}
@@ -368,7 +374,8 @@ func (runner *idleCopyRunner) handleFirstData() bool {
 		runner.abortForSignal(sig)
 		return false
 	}
-	if err := runHookWithContextAndTracker("on-first-data", runner.opts.onFirstData, runner.eventContext, runner.diagnostics, runner.opts.hookTimeout, runner.tracker, runner.opts.ignoreHookErrors); err != nil {
+	context := hookContextForInvocation(runner.state, "first-data", runner.eventContext, runner.opts.verbose)
+	if err := runHookWithContextAndTracker("on-first-data", runner.opts.onFirstData, context, runner.diagnostics, runner.opts.hookTimeout, runner.tracker, runner.opts.ignoreHookErrors); err != nil {
 		runner.done.firstDataHookFailed = true
 	}
 	if sig := runner.pollSignal(); sig != nil {
@@ -385,15 +392,19 @@ func (runner *idleCopyRunner) handleIdle() bool {
 	}
 	runner.active = false
 	runner.idle = true
-	idleContext := runner.state.snapshot("idle", "")
-	if reporter := verboseForWriter(runner.diagnostics); reporter != nil {
-		reporter.event(idleContext)
+	var idleContext hookContext
+	if runner.opts.verbose {
+		idleContext = runner.state.snapshot("idle", "")
+		if reporter := verboseForWriter(runner.diagnostics); reporter != nil {
+			reporter.event(idleContext)
+		}
 	}
 	if runner.opts.onIdleSet {
 		if sig := runner.pollSignal(); sig != nil {
 			runner.abortForSignal(sig)
 			return false
 		}
+		idleContext = hookContextForInvocation(runner.state, "idle", idleContext, runner.opts.verbose)
 		if err := runHookWithContextAndTracker("on-idle", runner.opts.onIdle, idleContext, runner.diagnostics, runner.opts.hookTimeout, runner.tracker, runner.opts.ignoreHookErrors); err != nil {
 			runner.done.idleErr = err
 		}
