@@ -36,8 +36,105 @@ func TestFirstDataHookFailureWinsBrokenPipe(t *testing.T) {
 }
 
 func TestSignalExitCodeUnix(t *testing.T) {
-	if got := signalExitCode(syscall.SIGTERM); got != 143 {
-		t.Fatalf("signalExitCode(SIGTERM) = %d, want 143", got)
+	for _, tt := range []struct {
+		signal syscall.Signal
+		status int
+	}{
+		{signal: syscall.SIGTERM, status: 143},
+		{signal: syscall.SIGHUP, status: 129},
+	} {
+		if got := signalExitCode(tt.signal); got != tt.status {
+			t.Errorf("signalExitCode(%v) = %d, want %d", tt.signal, got, tt.status)
+		}
+	}
+}
+
+func TestFinishCompletionSIGHUPStatusWinsShutdownFailure(t *testing.T) {
+	var diagnostics bytes.Buffer
+	status := finishCompletion(completion{signal: syscall.SIGHUP}, func() error {
+		err := errors.New("shutdown failed")
+		reportDiagnostic(&diagnostics, err)
+		return err
+	}, &diagnostics)
+
+	if status != 129 {
+		t.Fatalf("finishCompletion() status = %d, want 129", status)
+	}
+	if diagnostics.Len() == 0 {
+		t.Fatal("finishCompletion() diagnostics are empty, want shutdown failure")
+	}
+}
+
+func TestFinishCompletionRecordsSIGHUPDuringShutdown(t *testing.T) {
+	signals := make(chan os.Signal, 1)
+	tracker := &signalTracker{signals: signals}
+	var diagnostics bytes.Buffer
+	status := finishCompletionWithTracker(completion{}, func() error {
+		signals <- syscall.SIGHUP
+		return errors.New("shutdown failed")
+	}, &diagnostics, tracker)
+
+	if status != 129 {
+		t.Fatalf("finishCompletionWithTracker() status = %d, want 129", status)
+	}
+}
+
+func TestSIGHUPDuringShutdownKeepsFrozenContext(t *testing.T) {
+	state := newLifecycleState()
+	state.bytes.Store(4)
+	signals := make(chan os.Signal, 1)
+	tracker := &signalTracker{signals: signals}
+	context := snapshotShutdownContext(state, completion{})
+	var delivered hookContext
+	var diagnostics bytes.Buffer
+
+	status := finishCompletionWithTracker(completion{}, func() error {
+		delivered = context
+		state.bytes.Add(8)
+		signals <- syscall.SIGHUP
+		return nil
+	}, &diagnostics, tracker)
+	if status != 129 {
+		t.Fatalf("finishCompletionWithTracker() status = %d, want 129", status)
+	}
+	if delivered != context {
+		t.Fatalf("shutdown context changed during late SIGHUP: delivered = %#v, snapshot = %#v", delivered, context)
+	}
+	if got, want := context.reason, "eof"; got != want {
+		t.Fatalf("shutdown reason = %q, want %q", got, want)
+	}
+	if got, want := context.bytes, int64(4); got != want {
+		t.Fatalf("shutdown bytes = %d, want %d", got, want)
+	}
+}
+
+func TestSignalTrackerKeepsFirstHandledUnixSignal(t *testing.T) {
+	for _, tt := range []struct {
+		name          string
+		first, second os.Signal
+		status        int
+	}{
+		{name: "hangup then interrupt", first: syscall.SIGHUP, second: os.Interrupt, status: 129},
+		{name: "hangup then terminate", first: syscall.SIGHUP, second: syscall.SIGTERM, status: 129},
+		{name: "interrupt then hangup", first: os.Interrupt, second: syscall.SIGHUP, status: 130},
+		{name: "terminate then hangup", first: syscall.SIGTERM, second: syscall.SIGHUP, status: 143},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			signals := make(chan os.Signal, 2)
+			signals <- tt.first
+			signals <- tt.second
+			tracker := &signalTracker{signals: signals}
+
+			if got := tracker.poll(); got != tt.first {
+				t.Fatalf("signalTracker.poll() = %v, want %v", got, tt.first)
+			}
+			if got := tracker.first; got != tt.first {
+				t.Fatalf("signalTracker.first = %v, want %v", got, tt.first)
+			}
+			if got := signalExitCode(tracker.first); got != tt.status {
+				t.Fatalf("signalExitCode(%v) = %d, want %d", tracker.first, got, tt.status)
+			}
+		})
 	}
 }
 

@@ -222,9 +222,11 @@ is connected to an empty/null input. Hook stdout and stderr are both sent to
 pipewisp's stderr; stdout contains passthrough data only. If a hook exceeds
 `--hook-timeout`, pipewisp terminates the directly-started hook process, waits
 for it to be reaped, reports the timeout on stderr, and applies the normal
-hook-failure policy. A handled SIGINT or SIGTERM stops a running hook
-immediately instead of waiting for its timeout; the signal status remains the
-final status and the `on-shutdown` context keeps the original completion reason.
+hook-failure policy. On Unix, a handled SIGINT, SIGTERM, or SIGHUP stops a
+running hook immediately instead of waiting for its timeout; the signal status
+remains the final status and the `on-shutdown` context keeps the original
+completion reason. SIGHUP is Unix-only and does not change the existing Windows
+interrupt contract.
 
 With `--ignore-hook-errors`, command failures and hook timeouts are still
 reported to stderr but do not by themselves stop an otherwise continuing
@@ -382,6 +384,7 @@ normal platform-specific meaning.
 | `--on-shutdown` failure | 1 | Report the hook failure. With `--ignore-hook-errors`, preserve the pre-existing lifecycle result. |
 | SIGINT / Ctrl+C | 130 | Run `--on-shutdown` synchronously; this signal status wins if `--on-shutdown` also fails. |
 | SIGTERM (Unix) | 143 | Run `--on-shutdown` synchronously; this signal status wins if `--on-shutdown` also fails. |
+| SIGHUP (Unix) | 129 | Run `--on-shutdown` synchronously; this signal status wins if `--on-shutdown` also fails. |
 
 On Unix, pipewisp ignores SIGPIPE so a closed downstream is reported as an
 EPIPE copy result instead of terminating the process before cleanup can run.
