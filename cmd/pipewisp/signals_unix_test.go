@@ -132,25 +132,79 @@ func TestSubprocessSIGHUPDuringActiveCopyPreservesWrittenBytes(t *testing.T) {
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("Start() error = %v", err)
 	}
-	defer stdin.Close()
+	inputDone := make(chan error, 1)
+	defer func() {
+		_ = stdin.Close()
+		if cmd.ProcessState == nil {
+			_ = cmd.Process.Kill()
+			_ = stdout.Close()
+			_ = cmd.Wait()
+		}
+	}()
 
-	want := []byte("already-written")
-	if _, err := stdin.Write(want); err != nil {
-		t.Fatalf("stdin.Write() error = %v", err)
+	const (
+		payloadSize = 8 << 20
+		prefixSize  = 4 << 10
+	)
+	payload := bytes.Repeat([]byte("pipewisp-active-copy-"), payloadSize/len("pipewisp-active-copy-")+1)[:payloadSize]
+	go func() {
+		_, writeErr := stdin.Write(payload)
+		inputDone <- writeErr
+	}()
+
+	prefix := make([]byte, prefixSize)
+	prefixRead := make(chan error, 1)
+	go func() {
+		_, readErr := io.ReadFull(stdout, prefix)
+		prefixRead <- readErr
+	}()
+	select {
+	case err := <-prefixRead:
+		if err != nil {
+			t.Fatalf("ReadFull(stdout) error = %v", err)
+		}
+	case <-time.After(subprocessTimeout):
+		_ = cmd.Process.Kill()
+		_ = stdout.Close()
+		_ = stdin.Close()
+		<-inputDone
+		_ = cmd.Wait()
+		t.Fatal("stdout prefix was not produced before timeout")
 	}
-	got := make([]byte, len(want))
-	if _, err := io.ReadFull(stdout, got); err != nil {
-		t.Fatalf("ReadFull(stdout) error = %v", err)
+	select {
+	case err := <-inputDone:
+		t.Fatalf("input writer completed before signal: %v", err)
+	default:
 	}
 	if err := cmd.Process.Signal(syscall.SIGHUP); err != nil {
 		t.Fatalf("Signal(SIGHUP) error = %v", err)
 	}
 
-	if status := processExitCode(t, cmd); status != 129 {
-		t.Fatalf("process exit code = %d, want 129; stdout = %q; stderr = %q", status, got, stderr.String())
+	var output bytes.Buffer
+	output.Write(prefix)
+	if _, err := io.Copy(&output, stdout); err != nil {
+		t.Fatalf("io.Copy(stdout) error = %v", err)
 	}
-	if !bytes.Equal(got, want) {
-		t.Fatalf("stdout = %q, want %q", got, want)
+	if status := processExitCode(t, cmd); status != 129 {
+		t.Fatalf("process exit code = %d, want 129; stdout bytes = %d; stderr = %q", status, output.Len(), stderr.String())
+	}
+	select {
+	case err := <-inputDone:
+		if err == nil {
+			t.Fatal("input writer completed successfully after interrupted copy")
+		}
+	case <-time.After(subprocessTimeout):
+		t.Fatal("input writer did not finish after SIGHUP")
+	}
+	got := output.Bytes()
+	if len(got) == 0 {
+		t.Fatal("stdout is empty, want successfully written prefix")
+	}
+	if len(got) >= len(payload) {
+		t.Fatalf("stdout bytes = %d, want less than input payload %d after in-flight signal", len(got), len(payload))
+	}
+	if !bytes.Equal(got, payload[:len(got)]) {
+		t.Fatalf("stdout is not an input prefix: got first bytes %q, want %q", got[:min(len(got), 32)], payload[:min(len(got), 32)])
 	}
 	if markerContents := readMarker(t, marker); markerContents != "x" {
 		t.Fatalf("shutdown marker = %q, want exactly one invocation", markerContents)
