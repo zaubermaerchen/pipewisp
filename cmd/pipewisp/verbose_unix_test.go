@@ -19,6 +19,7 @@ func TestVerboseCanonicalUnixSignals(t *testing.T) {
 	}{
 		{signal: syscall.SIGINT, want: "SIGINT"},
 		{signal: syscall.SIGTERM, want: "SIGTERM"},
+		{signal: syscall.SIGHUP, want: "SIGHUP"},
 		{signal: syscall.SIGPIPE, want: "SIGPIPE"},
 		{signal: syscall.SIGKILL, want: "SIGKILL"},
 		{signal: syscall.Signal(64), want: "unknown signal_number=64"},
