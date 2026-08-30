@@ -41,6 +41,44 @@ func TestParseIdleOptions(t *testing.T) {
 				onResumeSet: true,
 			},
 		},
+		{
+			name: "verbose before idle separated",
+			args: []string{"--verbose", "--idle", "25ms"},
+			want: options{
+				idle:    25 * time.Millisecond,
+				idleSet: true,
+				verbose: true,
+			},
+		},
+		{
+			name: "idle before verbose separated",
+			args: []string{"--idle", "1s", "--verbose"},
+			want: options{
+				idle:    time.Second,
+				idleSet: true,
+				verbose: true,
+			},
+		},
+		{
+			name: "verbose before idle equals",
+			args: []string{"--verbose", "--idle=2s"},
+			want: options{
+				idle:    2 * time.Second,
+				idleSet: true,
+				verbose: true,
+			},
+		},
+		{
+			name: "name verbose idle",
+			args: []string{"--name", "relay", "--verbose", "--idle=3s"},
+			want: options{
+				name:    "relay",
+				nameSet: true,
+				idle:    3 * time.Second,
+				idleSet: true,
+				verbose: true,
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -72,12 +110,13 @@ func TestParseRejectsInvalidIdleOptions(t *testing.T) {
 		{name: "missing duration", args: []string{"--idle", "--on-idle", "idle"}, want: "missing value for --idle"},
 		{name: "missing idle hook", args: []string{"--idle=1s", "--on-idle"}, want: "missing value for --on-idle"},
 		{name: "missing resume hook", args: []string{"--idle=1s", "--on-resume"}, want: "missing value for --on-resume"},
-		{name: "empty duration", args: []string{"--idle=", "--on-idle", "idle"}, want: "empty duration for --idle"},
-		{name: "whitespace duration", args: []string{"--idle", " \t", "--on-idle", "idle"}, want: "empty duration for --idle"},
-		{name: "invalid duration", args: []string{"--idle=soon", "--on-idle", "idle"}, want: "invalid duration for --idle"},
-		{name: "zero duration", args: []string{"--idle=0s", "--on-idle", "idle"}, want: "--idle must be greater than zero"},
-		{name: "negative duration", args: []string{"--idle", "-1s", "--on-idle", "idle"}, want: "--idle must be greater than zero"},
-		{name: "idle alone", args: []string{"--idle=1s"}, want: "--idle requires --on-idle or --on-resume"},
+		{name: "empty duration with verbose", args: []string{"--verbose", "--idle="}, want: "empty duration for --idle"},
+		{name: "whitespace duration with verbose", args: []string{"--verbose", "--idle", " \t"}, want: "empty duration for --idle"},
+		{name: "invalid duration with verbose", args: []string{"--verbose", "--idle=soon"}, want: "invalid duration for --idle"},
+		{name: "zero duration with verbose", args: []string{"--verbose", "--idle=0s"}, want: "--idle must be greater than zero"},
+		{name: "negative duration with verbose", args: []string{"--verbose", "--idle", "-1s"}, want: "--idle must be greater than zero"},
+		{name: "idle alone", args: []string{"--idle=1s"}, want: "--idle requires --verbose, --on-idle, or --on-resume"},
+		{name: "idle with name alone", args: []string{"--name", "relay", "--idle=1s"}, want: "--idle requires --verbose, --on-idle, or --on-resume"},
 		{name: "hook without idle", args: []string{"--on-idle", "idle"}, want: "--on-idle requires --idle"},
 		{name: "empty idle hook", args: []string{"--idle=1s", "--on-idle="}, want: "empty command for --on-idle"},
 	}

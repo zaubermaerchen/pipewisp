@@ -108,7 +108,7 @@ func TestParseVerbose(t *testing.T) {
 	if _, _, err := parseArgs([]string{"--verbose", "--verbose"}); err == nil || !strings.Contains(err.Error(), "--verbose specified more than once") {
 		t.Fatalf("duplicate --verbose error = %v", err)
 	}
-	for _, args := range [][]string{{"--verbose=true"}, {"--verbose="}, {"--verbose", "false"}, {"-v"}, {"--verbose", "--idle", "1s"}} {
+	for _, args := range [][]string{{"--verbose=true"}, {"--verbose="}, {"--verbose", "false"}, {"-v"}} {
 		if _, _, err := parseArgs(args); err == nil {
 			t.Errorf("parseArgs(%v) succeeded, want error", args)
 		}
@@ -302,16 +302,28 @@ func TestVerboseFirstDataFailureUsesReasonlessShutdown(t *testing.T) {
 
 func TestVerboseIdleModeReportsBothTransitionsWithOneSidedHooks(t *testing.T) {
 	tests := []struct {
-		name string
-		opts options
+		name         string
+		opts         options
+		hookEvent    string
+		hookOutput   string
+		absentEvent  string
+		absentOutput string
 	}{
 		{
-			name: "idle hook only",
-			opts: options{idle: 5 * time.Millisecond, idleSet: true, onIdle: hookOutputCommand("idle-hook"), onIdleSet: true, verbose: true},
+			name:         "idle hook only",
+			opts:         options{idle: 5 * time.Millisecond, idleSet: true, onIdle: hookOutputCommand("idle-hook"), onIdleSet: true, verbose: true},
+			hookEvent:    "idle",
+			hookOutput:   "idle-hook",
+			absentEvent:  "resume",
+			absentOutput: "resume-hook",
 		},
 		{
-			name: "resume hook only",
-			opts: options{idle: 5 * time.Millisecond, idleSet: true, onResume: hookOutputCommand("resume-hook"), onResumeSet: true, verbose: true},
+			name:         "resume hook only",
+			opts:         options{idle: 5 * time.Millisecond, idleSet: true, onResume: hookOutputCommand("resume-hook"), onResumeSet: true, verbose: true},
+			hookEvent:    "resume",
+			hookOutput:   "resume-hook",
+			absentEvent:  "idle",
+			absentOutput: "idle-hook",
 		},
 	}
 
@@ -341,10 +353,131 @@ func TestVerboseIdleModeReportsBothTransitionsWithOneSidedHooks(t *testing.T) {
 			if strings.Count(got, "type=event event=idle ") != 1 || strings.Count(got, "type=event event=resume ") != 1 {
 				t.Fatalf("diagnostics=%q, want exactly one idle and resume event", got)
 			}
+			if strings.Count(got, "type=hook event="+tt.hookEvent+" state=start") != 1 {
+				t.Fatalf("diagnostics=%q, want one %s hook start record", got, tt.hookEvent)
+			}
+			if strings.Count(got, "type=hook event="+tt.hookEvent+" state=exit exit_code=0") != 1 {
+				t.Fatalf("diagnostics=%q, want one %s hook terminal record", got, tt.hookEvent)
+			}
+			if !strings.Contains(got, tt.hookOutput) {
+				t.Fatalf("diagnostics=%q, want %s hook output", got, tt.hookOutput)
+			}
+			if strings.Contains(got, "type=hook event="+tt.absentEvent) {
+				t.Fatalf("diagnostics=%q, did not expect %s hook record", got, tt.absentEvent)
+			}
+			if strings.Contains(got, tt.absentOutput) {
+				t.Fatalf("diagnostics=%q, did not expect %s hook output", got, tt.absentOutput)
+			}
 			if output.String() != "ab" {
 				t.Fatalf("stdout = %q, want ab", output.String())
 			}
 		})
+	}
+}
+
+func TestVerbosePassiveIdlePreservesCyclesBytesAndStdout(t *testing.T) {
+	input := &threeStageReader{
+		stages: [][]byte{[]byte("a"), []byte("b"), []byte("c"), nil},
+		gates:  []chan struct{}{nil, make(chan struct{}), make(chan struct{}), nil},
+	}
+	events := make(chan string, 32)
+	var output, diagnosticBuffer bytes.Buffer
+	diagnostics := io.MultiWriter(&diagnosticBuffer, &eventChannelWriter{label: "diagnostics", events: events})
+	config := options{idle: 5 * time.Millisecond, idleSet: true, verbose: true}
+	done := make(chan int, 1)
+	go func() { done <- runWithOptions(config, input, &output, diagnostics) }()
+
+	waitForEvent(t, events, "type=event event=idle bytes=1")
+	close(input.gates[1])
+	waitForEvent(t, events, "type=event event=resume bytes=1")
+	waitForEvent(t, events, "type=event event=idle bytes=2")
+	close(input.gates[2])
+	waitForEvent(t, events, "type=event event=resume bytes=2")
+
+	select {
+	case status := <-done:
+		if status != 0 {
+			t.Fatalf("runWithOptions() status = %d; diagnostics=%q", status, diagnosticBuffer.String())
+		}
+	case <-time.After(time.Second):
+		t.Fatal("runWithOptions() did not finish")
+	}
+
+	wantEvents := []string{
+		"type=event event=ready bytes=0 elapsed_ms=0",
+		"type=event event=first-data bytes=0 elapsed_ms=",
+		"type=event event=idle bytes=1 elapsed_ms=",
+		"type=event event=resume bytes=1 elapsed_ms=",
+		"type=event event=idle bytes=2 elapsed_ms=",
+		"type=event event=resume bytes=2 elapsed_ms=",
+		"type=event event=shutdown reason=eof bytes=3 elapsed_ms=",
+	}
+	lines := strings.Split(strings.TrimSpace(diagnosticBuffer.String()), "\n")
+	if len(lines) != len(wantEvents) {
+		t.Fatalf("diagnostic lines = %q, want %d lifecycle records", lines, len(wantEvents))
+	}
+	for i, want := range wantEvents {
+		if !strings.Contains(lines[i], want) {
+			t.Errorf("diagnostic line %d = %q, want %q", i, lines[i], want)
+		}
+	}
+	if strings.Contains(diagnosticBuffer.String(), "type=hook") {
+		t.Fatalf("passive idle emitted hook record: %q", diagnosticBuffer.String())
+	}
+	if got, want := output.String(), "abc"; got != want {
+		t.Fatalf("stdout = %q, want %q", got, want)
+	}
+}
+
+func TestVerbosePassiveIdleEmptyInput(t *testing.T) {
+	var output, diagnostics bytes.Buffer
+	config := options{idle: 5 * time.Millisecond, idleSet: true, verbose: true}
+	if status := runWithOptions(config, strings.NewReader(""), &output, &diagnostics); status != 0 {
+		t.Fatalf("runWithOptions() status = %d; diagnostics=%q", status, diagnostics.String())
+	}
+	if output.Len() != 0 {
+		t.Fatalf("stdout = %q, want empty", output.String())
+	}
+	got := diagnostics.String()
+	if !strings.Contains(got, "type=event event=ready bytes=0 elapsed_ms=0") ||
+		!strings.Contains(got, "type=event event=shutdown reason=eof bytes=0 elapsed_ms=") {
+		t.Fatalf("diagnostics = %q, want ready and EOF shutdown", got)
+	}
+	for _, event := range []string{"first-data", "idle", "resume", "type=hook"} {
+		if strings.Contains(got, event) {
+			t.Fatalf("diagnostics = %q, must not contain %q", got, event)
+		}
+	}
+}
+
+func TestVerbosePassiveIdleEOFWhileIdleDoesNotResume(t *testing.T) {
+	input := &gatedEOFReader{first: []byte("a"), eofReady: make(chan struct{})}
+	var output, diagnosticBuffer bytes.Buffer
+	events := make(chan string, 16)
+	diagnostics := io.MultiWriter(&diagnosticBuffer, &eventChannelWriter{label: "diagnostics", events: events})
+	config := options{idle: 5 * time.Millisecond, idleSet: true, verbose: true}
+	done := make(chan int, 1)
+	go func() { done <- runWithOptions(config, input, &output, diagnostics) }()
+
+	waitForEvent(t, events, "type=event event=idle bytes=1")
+	input.releaseEOF()
+	select {
+	case status := <-done:
+		if status != 0 {
+			t.Fatalf("runWithOptions() status = %d; diagnostics=%q", status, diagnosticBuffer.String())
+		}
+	case <-time.After(time.Second):
+		t.Fatal("runWithOptions() did not finish")
+	}
+	if got, want := output.String(), "a"; got != want {
+		t.Fatalf("stdout = %q, want %q", got, want)
+	}
+	got := diagnosticBuffer.String()
+	if !strings.Contains(got, "type=event event=shutdown reason=eof bytes=1 elapsed_ms=") {
+		t.Fatalf("diagnostics = %q, want EOF shutdown", got)
+	}
+	if strings.Contains(got, "event=resume") || strings.Contains(got, "type=hook") {
+		t.Fatalf("diagnostics = %q, EOF while idle must not resume or run hooks", got)
 	}
 }
 

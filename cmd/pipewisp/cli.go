@@ -230,8 +230,8 @@ func parseArgs(args []string) (options, bool, error) {
 	if opts.onResumeSet && !opts.idleSet {
 		return options{}, false, fmt.Errorf("--on-resume requires --idle")
 	}
-	if opts.idleSet && !opts.onIdleSet && !opts.onResumeSet {
-		return options{}, false, fmt.Errorf("--idle requires --on-idle or --on-resume")
+	if opts.idleSet && !opts.verbose && !opts.onIdleSet && !opts.onResumeSet {
+		return options{}, false, fmt.Errorf("--idle requires --verbose, --on-idle, or --on-resume")
 	}
 
 	return opts, false, nil
