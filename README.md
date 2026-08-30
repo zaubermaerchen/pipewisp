@@ -88,10 +88,12 @@ flowchart TD
     pass --> wait["Wait for more input"]
     wait -->|data| pass
     wait -->|idle timeout| idle["idle transition"]
-    idle --> idlehook["idle hook (optional)"]
+    idle -->|hook configured| idlehook["idle hook"]
+    idle -->|no hook| idlewait
     idlehook --> idlewait["Wait for data"]
     idlewait -->|data| resume["resume transition"]
-    resume --> resumehook["resume hook (optional)"]
+    resume -->|hook configured| resumehook["resume hook"]
+    resume -->|no hook| pass
     resumehook --> pass
 
     input -->|EOF / error / signal| shutdown["shutdown hook"]
@@ -133,8 +135,8 @@ enables passive idle/resume observation without requiring either idle hook.
 
 `--name` assigns a human-readable identity to this pipewisp instance. Runtime
 diagnostics use `pipewisp[NAME]:` instead of `pipewisp:`, but the option does
-not enable verbose mode, otherwise add diagnostics, or enable idle mode by
-itself. Both `--name NAME` and
+not enable verbose mode or otherwise add diagnostics, and it does not enable
+idle mode by itself. Both `--name NAME` and
 `--name=NAME` are accepted. A name beginning with `-` must use the equals form,
 for example `--name=-relay`; in the separated form, a token beginning with `-`
 is treated as a missing value. Duplicate use, including mixed forms, is an
