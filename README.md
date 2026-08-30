@@ -87,19 +87,23 @@ flowchart TD
 
     pass --> wait["Wait for more input"]
     wait -->|data| pass
-    wait -->|idle timeout| idle["idle hook"]
-    idle --> resume["Wait for data"]
-    resume -->|data| resumehook["resume hook"]
+    wait -->|idle timeout| idle["idle transition"]
+    idle --> idlehook["idle hook (optional)"]
+    idlehook --> idlewait["Wait for data"]
+    idlewait -->|data| resume["resume transition"]
+    resume --> resumehook["resume hook (optional)"]
     resumehook --> pass
 
     input -->|EOF / error / signal| shutdown["shutdown hook"]
     wait -->|EOF / error / signal| shutdown
-    resume -->|EOF / error / signal| shutdown
+    idlewait -->|EOF / error / signal| shutdown
     shutdown --> done([Exit])
 ```
 
 Each hook shown is optional, and the idle/resume path is active only when idle
-mode is configured. Hooks run synchronously. Failures are strict by default,
+mode is configured. `idle transition` and `resume transition` are lifecycle
+events; their corresponding hooks are optional. Hooks run synchronously.
+Failures are strict by default,
 and `--hook-timeout` starts a fresh timeout window for each invocation. With
 `--ignore-hook-errors`, ordinary hook command failures and hook timeouts are
 still diagnosed but do not by themselves stop an otherwise continuing
@@ -116,20 +120,21 @@ pipewisp [--name NAME] [--verbose] [--on-ready COMMAND] [--on-first-data COMMAND
 
 Each hook option is optional and may be specified at most once. `--idle` is a
 Go duration such as `250ms` or `2s`; it must be positive and must be used with
-at least one of `--on-idle` and `--on-resume`. The separated and equals forms
-are supported for options that take values. `--hook-timeout` is a positive Go
-duration that bounds each lifecycle hook invocation (`--on-ready`,
-`--on-first-data`, `--on-idle`, `--on-resume`, and `--on-shutdown`). A new timeout
-window starts for every invocation; when the option is omitted, hooks have no
-time limit. `--ignore-hook-errors` is a value-less opt-in flag; without it,
-hook failures remain strict and affect processing or final status as described
-below. `--verbose` is also value-less and writes lifecycle and hook diagnostics
-to stderr. It works without hooks, but does not enable idle mode or relax the
-requirement that `--idle` be accompanied by `--on-idle` or `--on-resume`.
+at least one of `--verbose`, `--on-idle`, or `--on-resume`. The separated and
+equals forms are supported for options that take values. `--hook-timeout` is a
+positive Go duration that bounds each lifecycle hook invocation (`--on-ready`,
+`--on-first-data`, `--on-idle`, `--on-resume`, and `--on-shutdown`). A new
+timeout window starts for every invocation; when the option is omitted, hooks
+have no time limit. `--ignore-hook-errors` is a value-less opt-in flag; without
+it, hook failures remain strict and affect processing or final status as
+described below. `--verbose` is also value-less and writes lifecycle and hook
+diagnostics to stderr. It works without hooks and, when combined with `--idle`,
+enables passive idle/resume observation without requiring either idle hook.
 
 `--name` assigns a human-readable identity to this pipewisp instance. Runtime
 diagnostics use `pipewisp[NAME]:` instead of `pipewisp:`, but the option does
-not enable verbose mode or otherwise add diagnostics. Both `--name NAME` and
+not enable verbose mode, otherwise add diagnostics, or enable idle mode by
+itself. Both `--name NAME` and
 `--name=NAME` are accepted. A name beginning with `-` must use the equals form,
 for example `--name=-relay`; in the separated form, a token beginning with `-`
 is treated as a missing value. Duplicate use, including mixed forms, is an
@@ -165,6 +170,8 @@ producer | pipewisp --on-ready='prepare' --on-shutdown='cleanup'
 producer | pipewisp --on-ready='prepare' --on-first-data='observe' --on-shutdown='cleanup'
 producer | pipewisp --idle 2s --on-idle 'printf "idle\\n"' --on-resume 'printf "active\\n"'
 producer | pipewisp --idle=250ms --on-idle='notify-idle'
+producer | pipewisp --verbose --idle 2s
+producer | pipewisp --name relay --verbose --idle 2s
 producer | pipewisp --hook-timeout=5s --on-ready 'prepare' --on-shutdown 'cleanup'
 producer | pipewisp --ignore-hook-errors --on-ready 'notify-start' --on-shutdown 'notify-stop'
 producer | pipewisp --verbose
@@ -173,8 +180,10 @@ pipewisp --help
 ```
 
 Duplicate options, unknown options, missing or empty commands or durations,
-invalid names, non-positive or invalid durations, invalid idle-hook
-combinations, and positional arguments are errors. CLI parse and validation
+invalid names, non-positive or invalid durations, invalid idle configurations,
+and positional arguments are errors. `--idle` without `--verbose`, `--on-idle`,
+or `--on-resume` fails with `--idle requires --verbose, --on-idle, or
+--on-resume`. CLI parse and validation
 diagnostics retain the ordinary `pipewisp:` prefix even when a valid `--name`
 appears elsewhere in the arguments. `--on-first-data` is independent of
 `--on-ready`, `--on-shutdown`, and idle mode; all lifecycle options may be used
@@ -195,14 +204,15 @@ least one byte. It completes before the first input byte is written to stdout;
 the input stream is otherwise preserved byte-for-byte and in order. Empty
 input and EOF without data do not run the first-data command.
 
-With idle mode enabled, the timer starts only after the first non-empty read.
-It runs while pipewisp is waiting for more input and is paused during stdout
-writes. Each non-empty read while active resets the timer. When the timer
-expires, `--on-idle` runs once for that idle interval, if configured. The first
-non-empty read after an idle interval runs `--on-resume`, if configured, before
-that data is written to stdout. When `--on-first-data` is also configured, the
-first-data hook runs before any resume hook and the initial data is not treated
-as a resume transition. EOF and signals do not trigger resume.
+With idle mode enabled, the timer starts after the first non-empty chunk has
+finished writing to stdout, while pipewisp waits for the next read. It is
+paused during stdout writes. Each non-empty read while active resets the timer.
+When the timer expires, `--on-idle` runs once for that idle interval, if
+configured. The first non-empty read after an idle interval runs `--on-resume`,
+if configured, before that data is written to stdout. When `--on-first-data` is
+also configured, the first-data hook runs before any resume hook and the initial
+data is not treated as a resume transition. EOF and signals do not trigger
+resume.
 
 On Unix, hooks run as `/bin/sh -c COMMAND`. On Windows, they run as
 `cmd.exe /C COMMAND`. Hook stdin is isolated from the passthrough stream: it
@@ -250,12 +260,15 @@ Without `--name`, the existing `pipewisp:` prefix is unchanged. Hook stdout and
 stderr are never given either prefix; they retain the forwarding behavior
 described below.
 
-Idle and resume events are observed only when idle mode has been enabled by a
-valid idle or resume hook configuration. Once enabled, both transitions are
-reported when they occur, even if only one of those hooks is configured. A
-shutdown record includes `reason=eof`, `reason=signal`,
-`reason=broken-pipe`, or `reason=io-error` when that existing lifecycle reason
-applies; otherwise the field is omitted.
+Combining `--verbose` with `--idle` enables passive idle/resume observation;
+neither idle hook is required. Idle and resume events are reported when they
+occur, regardless of whether their corresponding hooks are configured. If
+`--on-idle` is absent, an idle transition produces no `type=hook` records or
+hook command output; if `--on-resume` is absent, a resume transition produces
+no `type=hook` records or hook command output. Other configured lifecycle hooks
+retain their existing behavior. A shutdown record includes `reason=eof`,
+`reason=signal`, `reason=broken-pipe`, or `reason=io-error` when that existing
+lifecycle reason applies; otherwise the field is omitted.
 
 When a hook is configured for an event, stderr follows this logical order:
 
