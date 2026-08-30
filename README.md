@@ -225,7 +225,7 @@ for it to be reaped, reports the timeout on stderr, and applies the normal
 hook-failure policy. On Unix, a handled SIGINT, SIGTERM, or SIGHUP stops a
 running hook immediately instead of waiting for its timeout; the signal status
 remains the final status and the `on-shutdown` context keeps the original
-completion reason. SIGHUP is Unix-only; Windows behavior remains its existing
+completion reason. SIGHUP is Unix-only and does not change the existing Windows
 interrupt contract.
 
 With `--ignore-hook-errors`, command failures and hook timeouts are still
