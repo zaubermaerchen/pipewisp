@@ -57,8 +57,11 @@ release provides these six archives: `linux_amd64`, `linux_arm64`,
 Download the archive for your platform and verify it with the accompanying
 checksums file before extracting it. For example, on Linux:
 
+Replace `vX.Y.Z` with the release tag you downloaded (for example, `v0.4.0`).
+
 ```sh
-archive=pipewisp_v0.1.0_linux_amd64.tar.gz
+version=vX.Y.Z
+archive="pipewisp_${version}_linux_amd64.tar.gz"
 grep -F -- "  $archive" SHA256SUMS > "$archive.sha256" || exit 1
 sha256sum -c "$archive.sha256"
 ```
@@ -68,7 +71,8 @@ On macOS, replace the final command with
 PowerShell:
 
 ```powershell
-$archive = "pipewisp_v0.1.0_windows_amd64.zip"
+$version = "vX.Y.Z"
+$archive = "pipewisp_${version}_windows_amd64.zip"
 $expected = (Get-Content SHA256SUMS | Where-Object { $_ -like "*  $archive" }).Split()[0]
 $actual = (Get-FileHash -Algorithm SHA256 $archive).Hash.ToLowerInvariant()
 if ($actual -ne $expected) { throw "checksum mismatch: $archive" }

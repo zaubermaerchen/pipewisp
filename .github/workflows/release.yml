@@ -221,6 +221,12 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          tag_ref="refs/tags/$GITHUB_REF_NAME"
+          tag_type="$(git cat-file -t "$tag_ref" 2>/dev/null || true)"
+          if [[ "$tag_type" != tag ]]; then
+            echo "release tag $GITHUB_REF_NAME must be an annotated tag (found ${tag_type:-missing})" >&2
+            exit 1
+          fi
           if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
             echo "release already exists for tag $GITHUB_REF_NAME" >&2
             exit 1
@@ -233,4 +239,4 @@ jobs:
             "release/pipewisp_${VERSION}_windows_amd64.zip"
             "release/pipewisp_${VERSION}_windows_arm64.zip"
           )
-          gh release create "$GITHUB_REF_NAME" --verify-tag --generate-notes --title "$GITHUB_REF_NAME" "${archives[@]}" release/SHA256SUMS
+          gh release create "$GITHUB_REF_NAME" --verify-tag --notes-from-tag --title "$GITHUB_REF_NAME" "${archives[@]}" release/SHA256SUMS
