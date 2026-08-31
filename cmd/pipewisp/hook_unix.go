@@ -47,8 +47,8 @@ func (boundary *hookBoundary) stop(hook *exec.Cmd) error {
 	return combineHookStopErrors(rootErr, groupErr)
 }
 
-func (boundary *hookBoundary) killedRoot(*os.ProcessState) bool {
-	return !boundary.rootExited
+func (boundary *hookBoundary) killedRoot(state *os.ProcessState) bool {
+	return !boundary.rootExited && processStateKilledByPipewisp(state)
 }
 
 func (*hookBoundary) close() {}

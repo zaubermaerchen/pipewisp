@@ -98,6 +98,27 @@ func TestHookTimeoutPreservesExternalRootSIGKILL(t *testing.T) {
 	assertHookProcessTreeNotCompleted(t, completed)
 }
 
+func TestHookBoundaryKilledRootUsesPostWaitState(t *testing.T) {
+	naturalExit := exec.Command("/bin/sh", "-c", "exit 0")
+	if err := naturalExit.Run(); err != nil {
+		t.Fatalf("natural exit command error = %v", err)
+	}
+	if (&hookBoundary{}).killedRoot(naturalExit.ProcessState) {
+		t.Fatal("killedRoot() = true for a naturally exited root")
+	}
+
+	killedRoot := exec.Command("/bin/sh", "-c", "kill -KILL $$")
+	if err := killedRoot.Run(); err == nil {
+		t.Fatal("killed root command unexpectedly succeeded")
+	}
+	if !(&hookBoundary{}).killedRoot(killedRoot.ProcessState) {
+		t.Fatal("killedRoot() = false for a SIGKILL root")
+	}
+	if (&hookBoundary{rootExited: true}).killedRoot(killedRoot.ProcessState) {
+		t.Fatal("killedRoot() = true after the root was observed exited")
+	}
+}
+
 func TestHookSignalStopsDescendantAfterRootNaturalExit(t *testing.T) {
 	directory := t.TempDir()
 	child := filepath.Join(directory, "child.pid")
