@@ -60,6 +60,15 @@ including its TDD, delegation, and parent-agent diff-review requirements. Stop
 if implementation reveals a specification contradiction, a new material
 decision, or an expansion of scope/API/data/security.
 
+Before treating implementation as verified, map each behavior-changing
+acceptance criterion to a test that distinguishes the required behavior from
+the prior behavior. For new behavior or regression tests, when practical,
+confirm that they fail for the intended reason against the pre-change code or a
+deliberately broken comparison, not merely that some test fails. For
+asynchronous or concurrent behavior, establish prerequisites through observable
+state rather than elapsed time alone, and ensure test resources are cleaned up
+even when assertions or timeouts fail.
+
 Before a commit or pull request, use the repository's `go-change-verifier`
 skill when available. Do not ignore a failed or unavailable required check;
 investigate, fix within scope, obtain equivalent evidence such as the required
