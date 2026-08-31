@@ -65,8 +65,8 @@ func TestHookSignalStopsDescendantAfterRootNaturalExit(t *testing.T) {
 	go func() {
 		done <- executeHookWithControl(command, hookContext{event: "ready"}, &diagnostics, 0, tracker, nil)
 	}()
-	waitForWindowsHookProcessMarker(t, child)
-	waitForWindowsHookProcessMarker(t, grandchild)
+	waitForWindowsHookProcessMarker(t, child, done, &diagnostics)
+	waitForWindowsHookProcessMarker(t, grandchild, done, &diagnostics)
 	childHandle := openWindowsHookProcess(t, readWindowsHookPID(t, child))
 	grandchildHandle := openWindowsHookProcess(t, readWindowsHookPID(t, grandchild))
 	if err := os.WriteFile(gate, []byte("release"), 0600); err != nil {
@@ -108,8 +108,8 @@ func TestHookTimeoutStopsOrdinaryChildAndGrandchild(t *testing.T) {
 	go func() {
 		done <- executeHookWithControl(command, hookContext{event: "ready"}, &diagnostics, 3*time.Second, nil, nil)
 	}()
-	waitForWindowsHookProcessMarker(t, child)
-	waitForWindowsHookProcessMarker(t, grandchild)
+	waitForWindowsHookProcessMarker(t, child, done, &diagnostics)
+	waitForWindowsHookProcessMarker(t, grandchild, done, &diagnostics)
 	childHandle := openWindowsHookProcess(t, readWindowsHookPID(t, child))
 	grandchildHandle := openWindowsHookProcess(t, readWindowsHookPID(t, grandchild))
 	err := <-done
@@ -142,8 +142,8 @@ func TestHookSignalStopsOrdinaryChildAndGrandchild(t *testing.T) {
 	go func() {
 		done <- executeHookWithControl(command, hookContext{event: "ready"}, &diagnostics, 0, tracker, nil)
 	}()
-	waitForWindowsHookProcessMarker(t, child)
-	waitForWindowsHookProcessMarker(t, grandchild)
+	waitForWindowsHookProcessMarker(t, child, done, &diagnostics)
+	waitForWindowsHookProcessMarker(t, grandchild, done, &diagnostics)
 	childHandle := openWindowsHookProcess(t, readWindowsHookPID(t, child))
 	grandchildHandle := openWindowsHookProcess(t, readWindowsHookPID(t, grandchild))
 	signals <- os.Interrupt
@@ -173,7 +173,7 @@ func TestHookCancellationDoesNotStopUnrelatedProcess(t *testing.T) {
 	if err := unrelated.Start(); err != nil {
 		t.Fatalf("unrelated Start() error = %v", err)
 	}
-	waitForWindowsHookProcessMarker(t, unrelatedGrandchild)
+	waitForWindowsHookProcessMarker(t, unrelatedGrandchild, nil, nil)
 	unrelatedHandle := openWindowsHookProcess(t, readWindowsHookPID(t, unrelatedGrandchild))
 	unrelatedDone := false
 	defer func() {
@@ -197,20 +197,20 @@ func TestHookCancellationDoesNotStopUnrelatedProcess(t *testing.T) {
 	if !errors.As(err, &timeoutErr) {
 		_ = unrelated.Process.Kill()
 		_ = unrelated.Wait()
-		t.Fatalf("executeHookWithControl() error = %v, want hook timeout", err)
+		t.Fatalf("executeHookWithControl() error = %v, want hook timeout; diagnostics = %q", err, diagnostics.String())
 	}
 	if status, err := windows.WaitForSingleObject(unrelatedHandle, 0); err != nil {
-		t.Fatalf("unrelated WaitForSingleObject(0) error = %v", err)
+		t.Fatalf("unrelated WaitForSingleObject(0) error = %v; diagnostics = %q", err, diagnostics.String())
 	} else if status != windowsWaitTimeout {
-		t.Fatalf("unrelated process ended during hook cancellation: wait status = %#x", status)
+		t.Fatalf("unrelated process ended during hook cancellation: wait status = %#x; diagnostics = %q", status, diagnostics.String())
 	}
 	waitForWindowsHookProcessExit(t, unrelatedHandle, "unrelated")
 	if err := unrelated.Wait(); err != nil {
-		t.Fatalf("unrelated process was stopped: Wait() error = %v", err)
+		t.Fatalf("unrelated process was stopped: Wait() error = %v; diagnostics = %q", err, diagnostics.String())
 	}
 	unrelatedDone = true
 	if _, err := os.Stat(unrelatedCompleted); err != nil {
-		t.Fatalf("unrelated completion marker error = %v", err)
+		t.Fatalf("unrelated completion marker error = %v; diagnostics = %q", err, diagnostics.String())
 	}
 }
 
@@ -226,8 +226,8 @@ func windowsHookProcessTreeCommand(t *testing.T, mode string) string {
 	t.Helper()
 	t.Setenv(hookProcessTreeTokenEnv, hookProcessTreeToken)
 	t.Setenv(hookProcessTreeModeEnv, mode)
-	t.Setenv(hookProcessTreeExecutableEnv, os.Args[0])
-	return `"%` + hookProcessTreeExecutableEnv + `%"`
+	t.Setenv(hookProcessTreeExecutableEnv, `"`+os.Args[0]+`"`)
+	return `%` + hookProcessTreeExecutableEnv + `%`
 }
 
 func hookProcessTreeChild() {
@@ -342,7 +342,7 @@ func waitForWindowsHookProcessExit(t *testing.T, handle windows.Handle, name str
 	}
 }
 
-func waitForWindowsHookProcessMarker(t *testing.T, path string) {
+func waitForWindowsHookProcessMarker(t *testing.T, path string, done <-chan error, diagnostics *bytes.Buffer) {
 	t.Helper()
 	deadline := time.NewTimer(2 * time.Second)
 	defer deadline.Stop()
@@ -354,8 +354,17 @@ func waitForWindowsHookProcessMarker(t *testing.T, path string) {
 		}
 		select {
 		case <-ticker.C:
+		case err := <-done:
+			t.Fatalf("process marker %q was not created: hook error = %v; diagnostics = %q", path, err, diagnostics.String())
 		case <-deadline.C:
-			t.Fatalf("process marker %q was not created", path)
+			if done != nil {
+				select {
+				case err := <-done:
+					t.Fatalf("process marker %q was not created: hook error = %v; diagnostics = %q", path, err, diagnostics.String())
+				default:
+				}
+			}
+			t.Fatalf("process marker %q was not created; diagnostics unavailable because hook is still running", path)
 		}
 	}
 }
