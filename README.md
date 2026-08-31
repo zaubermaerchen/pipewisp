@@ -220,11 +220,22 @@ On Unix, hooks run as `/bin/sh -c COMMAND`. On Windows, they run as
 `cmd.exe /C COMMAND`. Hook stdin is isolated from the passthrough stream: it
 is connected to an empty/null input. Hook stdout and stderr are both sent to
 pipewisp's stderr; stdout contains passthrough data only. If a hook exceeds
-`--hook-timeout`, pipewisp terminates the directly-started hook process, waits
-for it to be reaped, reports the timeout on stderr, and applies the normal
-hook-failure policy. A handled SIGINT or SIGTERM stops a running hook
-immediately instead of waiting for its timeout; the signal status remains the
-final status and the `on-shutdown` context keeps the original completion reason.
+`--hook-timeout`, pipewisp stops the hook execution boundary, waits for the
+directly-started process to be reaped, completes the bounded output drain, and
+reports the timeout on stderr before applying the normal hook-failure policy.
+On Unix, each hook is placed in a private process group and timeout or handled
+signal cancellation sends `SIGKILL` to that group. Ordinary children and
+grandchildren therefore stop with the shell; a child that deliberately calls
+`setsid`, creates an independent session, or otherwise escapes/reparents itself
+may remain outside that boundary. On Windows, each hook is assigned to a
+private Job Object before its `cmd.exe` primary thread is resumed, and
+cancellation terminates that job. A process that deliberately breaks away,
+detaches, or reparents itself may remain outside the boundary. These limits
+apply to synchronous hooks; pipewisp does not provide an asynchronous hook or
+supervise deliberately detached work. A handled SIGINT or SIGTERM stops a
+running hook immediately instead of waiting for its timeout; a handled signal
+wins a timeout race, the signal status remains the final status, and the
+`on-shutdown` context keeps the original completion reason.
 
 With `--ignore-hook-errors`, command failures and hook timeouts are still
 reported to stderr but do not by themselves stop an otherwise continuing
