@@ -129,10 +129,15 @@ func executeHookWithControl(command string, context hookContext, diagnostics io.
 		signalGeneration, signalDone = tracker.beginHookObservation()
 		signalC = tracker.signals
 	}
+	boundary, err := newHookBoundary()
+	if err != nil {
+		return &hookStartError{err: err}
+	}
+	defer boundary.close()
 	if beforeStart != nil {
 		beforeStart()
 	}
-	if err := hook.Start(); err != nil {
+	if err := boundary.start(hook); err != nil {
 		return &hookStartError{err: err}
 	}
 	waitDone := make(chan error, 1)
@@ -165,15 +170,7 @@ func executeHookWithControl(command string, context hookContext, diagnostics io.
 						return wrapHookProcessError(normalizeHookWaitError(waitErr), hook.ProcessState)
 					default:
 					}
-					killErr := hook.Process.Kill()
-					waitErr := <-waitDone
-					if errors.Is(killErr, os.ErrProcessDone) {
-						return wrapHookProcessError(normalizeHookWaitError(waitErr), hook.ProcessState)
-					}
-					if !processStateKilledByPipewisp(hook.ProcessState) {
-						return wrapHookProcessError(normalizeHookWaitError(waitErr), hook.ProcessState)
-					}
-					return &hookSignalError{signal: tracker.firstSignal(), waitErr: waitErr}
+					return stopHookAndWait(boundary, hook, waitDone, 0, tracker.firstSignal())
 				}
 			}
 			select {
@@ -181,15 +178,7 @@ func executeHookWithControl(command string, context hookContext, diagnostics io.
 				return wrapHookProcessError(normalizeHookWaitError(waitErr), hook.ProcessState)
 			default:
 			}
-			killErr := hook.Process.Kill()
-			waitErr := <-waitDone
-			if errors.Is(killErr, os.ErrProcessDone) {
-				return wrapHookProcessError(normalizeHookWaitError(waitErr), hook.ProcessState)
-			}
-			if !processStateKilledByPipewisp(hook.ProcessState) {
-				return wrapHookProcessError(normalizeHookWaitError(waitErr), hook.ProcessState)
-			}
-			return &hookTimeoutError{duration: timeout}
+			return stopHookAndWait(boundary, hook, waitDone, timeout, nil)
 		case sig := <-signalC:
 			tracker.remember(sig)
 			if sig == nil {
@@ -200,15 +189,7 @@ func executeHookWithControl(command string, context hookContext, diagnostics io.
 				return wrapHookProcessError(normalizeHookWaitError(waitErr), hook.ProcessState)
 			default:
 			}
-			killErr := hook.Process.Kill()
-			waitErr := <-waitDone
-			if errors.Is(killErr, os.ErrProcessDone) {
-				return wrapHookProcessError(normalizeHookWaitError(waitErr), hook.ProcessState)
-			}
-			if !processStateKilledByPipewisp(hook.ProcessState) {
-				return wrapHookProcessError(normalizeHookWaitError(waitErr), hook.ProcessState)
-			}
-			return &hookSignalError{signal: tracker.firstSignal(), waitErr: waitErr}
+			return stopHookAndWait(boundary, hook, waitDone, 0, tracker.firstSignal())
 		case <-signalDone:
 			if !tracker.generationChanged(signalGeneration) {
 				continue
@@ -218,17 +199,27 @@ func executeHookWithControl(command string, context hookContext, diagnostics io.
 				return wrapHookProcessError(normalizeHookWaitError(waitErr), hook.ProcessState)
 			default:
 			}
-			killErr := hook.Process.Kill()
-			waitErr := <-waitDone
-			if errors.Is(killErr, os.ErrProcessDone) {
-				return wrapHookProcessError(normalizeHookWaitError(waitErr), hook.ProcessState)
-			}
-			if !processStateKilledByPipewisp(hook.ProcessState) {
-				return wrapHookProcessError(normalizeHookWaitError(waitErr), hook.ProcessState)
-			}
-			return &hookSignalError{signal: tracker.firstSignal(), waitErr: waitErr}
+			return stopHookAndWait(boundary, hook, waitDone, 0, tracker.firstSignal())
 		}
 	}
+}
+
+// stopHookAndWait keeps cancellation outcomes separate from natural exits while
+// waiting for Cmd.Wait to reap the directly-owned process.
+func stopHookAndWait(boundary *hookBoundary, hook *exec.Cmd, waitDone <-chan error, timeout time.Duration, signal os.Signal) error {
+	stopErr := boundary.stop(hook)
+	waitErr := <-waitDone
+	normalizedWaitErr := normalizeHookWaitError(waitErr)
+	if stopErr != nil && !errors.Is(stopErr, os.ErrProcessDone) {
+		return wrapHookProcessError(errors.Join(fmt.Errorf("stop hook execution boundary: %w", stopErr), normalizedWaitErr), hook.ProcessState)
+	}
+	if errors.Is(stopErr, os.ErrProcessDone) || !boundary.killedRoot(hook.ProcessState) {
+		return wrapHookProcessError(normalizedWaitErr, hook.ProcessState)
+	}
+	if signal != nil {
+		return &hookSignalError{signal: signal, waitErr: waitErr}
+	}
+	return &hookTimeoutError{duration: timeout}
 }
 
 const hookWaitDelay = 250 * time.Millisecond
