@@ -36,7 +36,10 @@ func (boundary *hookBoundary) stop(hook *exec.Cmd) error {
 		boundary.rootExited = true
 		return os.ErrProcessDone
 	}
-	rootErr := hook.Process.Kill()
+	// Observe whether the root process is still alive without terminating it.
+	// The process group kill below is the only stop operation so descendants
+	// cannot be left running while the shell exits naturally on its own.
+	rootErr := hook.Process.Signal(syscall.Signal(0))
 	if errors.Is(rootErr, os.ErrProcessDone) {
 		boundary.rootExited = true
 	}
