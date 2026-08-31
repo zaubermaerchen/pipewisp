@@ -229,13 +229,14 @@ grandchildren therefore stop with the shell; a child that deliberately calls
 `setsid`, creates an independent session, or otherwise escapes/reparents itself
 may remain outside that boundary. On Windows, each hook is assigned to a
 private Job Object before its `cmd.exe` primary thread is resumed, and
-cancellation terminates that job. A process that deliberately breaks away,
-detaches, or reparents itself may remain outside the boundary. These limits
+cancellation terminates that job. A process that explicitly breaks away may
+remain outside that boundary. These limits
 apply to synchronous hooks; pipewisp does not provide an asynchronous hook or
-supervise deliberately detached work. A handled SIGINT or SIGTERM stops a
-running hook immediately instead of waiting for its timeout; a handled signal
-wins a timeout race, the signal status remains the final status, and the
-`on-shutdown` context keeps the original completion reason.
+supervise deliberately detached work. A handled SIGINT—or, on Unix, SIGTERM or
+SIGHUP—stops a running hook immediately instead of waiting for its timeout; a
+handled signal wins a timeout race, the signal status remains the final status,
+and the `on-shutdown` context keeps the original completion reason. SIGHUP is
+Unix-only and does not change the existing Windows interrupt contract.
 
 With `--ignore-hook-errors`, command failures and hook timeouts are still
 reported to stderr but do not by themselves stop an otherwise continuing
@@ -393,6 +394,7 @@ normal platform-specific meaning.
 | `--on-shutdown` failure | 1 | Report the hook failure. With `--ignore-hook-errors`, preserve the pre-existing lifecycle result. |
 | SIGINT / Ctrl+C | 130 | Run `--on-shutdown` synchronously; this signal status wins if `--on-shutdown` also fails. |
 | SIGTERM (Unix) | 143 | Run `--on-shutdown` synchronously; this signal status wins if `--on-shutdown` also fails. |
+| SIGHUP (Unix) | 129 | Run `--on-shutdown` synchronously; this signal status wins if `--on-shutdown` also fails. |
 
 On Unix, pipewisp ignores SIGPIPE so a closed downstream is reported as an
 EPIPE copy result instead of terminating the process before cleanup can run.
