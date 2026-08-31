@@ -11,7 +11,9 @@ import (
 	"syscall"
 )
 
-type hookBoundary struct{}
+type hookBoundary struct {
+	rootExited bool
+}
 
 func newShellCommand(command string) *exec.Cmd {
 	hook := exec.Command("/bin/sh", "-c", command)
@@ -31,21 +33,36 @@ func (boundary *hookBoundary) start(hook *exec.Cmd) error {
 
 func (boundary *hookBoundary) stop(hook *exec.Cmd) error {
 	if hook.Process == nil {
+		boundary.rootExited = true
 		return os.ErrProcessDone
 	}
-	if err := syscall.Kill(-hook.Process.Pid, syscall.SIGKILL); err != nil {
-		if errors.Is(err, syscall.ESRCH) {
-			return os.ErrProcessDone
-		}
-		// Reap remains bounded even if group termination fails; retain the
-		// boundary failure so descendants are never reported as fully stopped.
-		return errors.Join(err, hook.Process.Kill())
+	rootErr := hook.Process.Kill()
+	if errors.Is(rootErr, os.ErrProcessDone) {
+		boundary.rootExited = true
 	}
-	return nil
+	groupErr := syscall.Kill(-hook.Process.Pid, syscall.SIGKILL)
+	return combineHookStopErrors(rootErr, groupErr)
 }
 
-func (*hookBoundary) killedRoot(state *os.ProcessState) bool {
-	return processStateKilledByPipewisp(state)
+func (boundary *hookBoundary) killedRoot(*os.ProcessState) bool {
+	return !boundary.rootExited
 }
 
 func (*hookBoundary) close() {}
+
+func combineHookStopErrors(rootErr, groupErr error) error {
+	var stopErrors []error
+	if rootErr != nil && !errors.Is(rootErr, os.ErrProcessDone) {
+		stopErrors = append(stopErrors, rootErr)
+	}
+	if groupErr != nil && !errors.Is(groupErr, syscall.ESRCH) {
+		stopErrors = append(stopErrors, groupErr)
+	}
+	if len(stopErrors) > 0 {
+		return errors.Join(stopErrors...)
+	}
+	if errors.Is(rootErr, os.ErrProcessDone) {
+		return os.ErrProcessDone
+	}
+	return nil
+}
