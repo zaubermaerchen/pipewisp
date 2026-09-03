@@ -15,8 +15,8 @@
 `pipewisp` is a transparent lifecycle observer for pipelines.
 
 Think `pv`, but instead of displaying throughput, it runs hooks when
-a stream becomes ready, receives its first data, goes idle, resumes,
-or shuts down.
+a stream becomes ready, receives its first data, or shuts down—and,
+with `--idle`, when it goes idle or resumes.
 
 ## Concept
 
