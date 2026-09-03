@@ -12,10 +12,11 @@
 
 **Pass the stream through. Let lifecycle side effects drift away.**
 
-`pipewisp` passes standard input to standard output byte-for-byte while running
-optional commands at stream lifecycle events. It is intended for inserting
-synchronous side effects into a Unix or Windows pipe without transforming the
-stream.
+`pipewisp` is a transparent lifecycle observer for pipelines.
+
+Think `pv`, but instead of displaying throughput, it runs hooks when
+a stream becomes ready, receives its first data, or shuts down—and,
+with `--idle`, when it goes idle or resumes.
 
 ## Concept
 
