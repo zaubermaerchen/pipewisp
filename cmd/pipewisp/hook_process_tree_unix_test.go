@@ -7,9 +7,12 @@ package main
 import (
 	"bytes"
 	"errors"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -153,6 +156,135 @@ func TestHookSignalStopsDescendantAfterRootNaturalExit(t *testing.T) {
 	}
 }
 
+func TestAsyncHookRetainsBoundaryAfterRootNaturalExit(t *testing.T) {
+	directory := t.TempDir()
+	child := filepath.Join(directory, "child.pid")
+	completed := filepath.Join(directory, "completed")
+	childCommand := "printf '%s' \"$$\" > " + unixQuote(child) + "; sleep 3; printf done > " + unixQuote(completed)
+	command := "sh -c " + unixQuote(childCommand) + " &"
+
+	manager := newAsyncHookManager(io.Discard)
+	defer manager.stopAndWait()
+	manager.start("on-idle", command, hookContext{event: "idle"}, 0)
+	waitForHookProcessMarker(t, child)
+	// Let Cmd.Wait reach the old WaitDelay path after the root shell exits.
+	time.Sleep(hookWaitDelay + 100*time.Millisecond)
+	manager.stopAndWait()
+	waitForUnixHookProcessExit(t, child)
+	if _, err := os.Stat(completed); err == nil {
+		t.Fatalf("descendant completion marker exists after async shutdown")
+	}
+}
+
+func TestAsyncHookRetainsBoundaryWithClosedOutput(t *testing.T) {
+	directory := t.TempDir()
+	child := filepath.Join(directory, "child.pid")
+	completed := filepath.Join(directory, "completed")
+	childCommand := "printf '%s' \"$$\" > " + unixQuote(child) + "; sleep 3; printf done > " + unixQuote(completed)
+	command := "sh -c " + unixQuote(childCommand) + " >/dev/null 2>&1 &"
+
+	var diagnostics bytes.Buffer
+	manager := newAsyncHookManager(&diagnostics)
+	defer manager.stopAndWait()
+	manager.start("on-idle", command, hookContext{event: "idle"}, 0)
+	waitForHookProcessMarker(t, child)
+	// Cmd.Wait completes immediately because the child inherited no pipe FDs.
+	time.Sleep(hookWaitDelay + 100*time.Millisecond)
+	manager.mu.Lock()
+	retained := len(manager.hooks)
+	manager.mu.Unlock()
+	if retained != 1 {
+		t.Fatalf("async hook count = %d, want retained boundary", retained)
+	}
+	manager.stopAndWait()
+	waitForUnixHookProcessExit(t, child)
+	if _, err := os.Stat(completed); err == nil {
+		t.Fatal("descendant completion marker exists after async shutdown")
+	}
+	if strings.Contains(diagnostics.String(), "on-idle hook failed") {
+		t.Fatalf("diagnostics = %q, shutdown cancellation must not be a hook failure", diagnostics.String())
+	}
+}
+
+func TestAsyncHookRetainedChildTimeoutReportsTimeout(t *testing.T) {
+	directory := t.TempDir()
+	child := filepath.Join(directory, "child.pid")
+	completed := filepath.Join(directory, "completed")
+	childCommand := "printf '%s' \"$$\" > " + unixQuote(child) + "; sleep 5; printf done > " + unixQuote(completed)
+	command := "sh -c " + unixQuote(childCommand) + " >/dev/null 2>&1 &"
+	events := make(chan string, 16)
+	var diagnostics bytes.Buffer
+	reporter := newVerboseReporter(io.MultiWriter(&diagnostics, &eventChannelWriter{label: "diagnostics", events: events}), true)
+	manager := newAsyncHookManager(reporter)
+	manager.start("on-idle", command, hookContext{event: "idle"}, 300*time.Millisecond)
+	waitForHookProcessMarker(t, child)
+	waitForEvent(t, events, "type=hook event=idle state=timeout")
+	manager.stopAndWait()
+	waitForUnixHookProcessExit(t, child)
+	got := diagnostics.String()
+	if !strings.Contains(got, "type=hook event=idle state=timeout") {
+		t.Fatalf("diagnostics = %q, missing timeout record", got)
+	}
+	if !strings.Contains(got, "on-idle hook failed: hook timed out") {
+		t.Fatalf("diagnostics = %q, missing timeout diagnostic", got)
+	}
+}
+
+func TestAsyncHookShutdownReportsNaturalDirectFailureOnce(t *testing.T) {
+	directory := t.TempDir()
+	child := filepath.Join(directory, "child.pid")
+	rootExited := filepath.Join(directory, "root.exited")
+	childCommand := "printf '%s' \"$$\" > " + unixQuote(child) + "; sleep 3"
+	command := "sh -c " + unixQuote(childCommand) + " & printf done > " + unixQuote(rootExited) + "; exit 7"
+	var diagnostics bytes.Buffer
+	manager := newAsyncHookManager(&diagnostics)
+	manager.start("on-idle", command, hookContext{event: "idle"}, 0)
+	waitForHookProcessMarker(t, child)
+	waitForHookProcessMarker(t, rootExited)
+	// The descendant keeps the hook output descriptors open, so Cmd.Wait has
+	// not reported the already-finished non-zero root until cleanup stops it.
+	manager.stopAndWait()
+	waitForUnixHookProcessExit(t, child)
+
+	got := diagnostics.String()
+	if count := strings.Count(got, "on-idle hook failed:"); count != 1 {
+		t.Fatalf("direct failure diagnostics = %d, want exactly one; diagnostics = %q", count, got)
+	}
+	if !strings.Contains(got, "on-idle hook failed: exit status 7") {
+		t.Fatalf("diagnostics = %q, missing natural direct failure", got)
+	}
+}
+
+func TestAsyncHookTimeoutReportsNaturalDirectFailureSeparately(t *testing.T) {
+	directory := t.TempDir()
+	child := filepath.Join(directory, "child.pid")
+	rootExited := filepath.Join(directory, "root.exited")
+	childCommand := "printf '%s' \"$$\" > " + unixQuote(child) + "; sleep 3"
+	command := "sh -c " + unixQuote(childCommand) + " & printf done > " + unixQuote(rootExited) + "; exit 7"
+	events := make(chan string, 16)
+	var diagnostics bytes.Buffer
+	reporter := newVerboseReporter(io.MultiWriter(&diagnostics, &eventChannelWriter{label: "diagnostics", events: events}), true)
+	manager := newAsyncHookManager(reporter)
+	manager.start("on-idle", command, hookContext{event: "idle"}, 50*time.Millisecond)
+	waitForHookProcessMarker(t, child)
+	waitForHookProcessMarker(t, rootExited)
+	// The timeout fires while WaitDelay still retains the natural root result.
+	waitForEvent(t, events, "type=hook event=idle state=timeout")
+	manager.stopAndWait()
+	waitForUnixHookProcessExit(t, child)
+
+	got := diagnostics.String()
+	if count := strings.Count(got, "on-idle hook failed:"); count != 2 {
+		t.Fatalf("failure diagnostics = %d, want direct failure and timeout; diagnostics = %q", count, got)
+	}
+	if !strings.Contains(got, "on-idle hook failed: exit status 7") {
+		t.Fatalf("diagnostics = %q, missing natural direct failure", got)
+	}
+	if !strings.Contains(got, "on-idle hook failed: hook timed out") {
+		t.Fatalf("diagnostics = %q, missing timeout diagnostic", got)
+	}
+}
+
 func TestHookCancellationDoesNotStopUnrelatedProcess(t *testing.T) {
 	unrelated := exec.Command("sleep", "3")
 	if err := unrelated.Start(); err != nil {
@@ -201,6 +333,36 @@ func waitForHookProcessMarker(t *testing.T, path string) {
 		case <-ticker.C:
 		case <-deadline.C:
 			t.Fatalf("process marker %q was not created", path)
+		}
+	}
+}
+
+func waitForUnixHookProcessExit(t *testing.T, path string) {
+	t.Helper()
+	contents, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile(%q) error = %v", path, err)
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(contents)))
+	if err != nil {
+		t.Fatalf("Atoi(%q) error = %v", string(contents), err)
+	}
+	deadline := time.NewTimer(2 * time.Second)
+	defer deadline.Stop()
+	ticker := time.NewTicker(time.Millisecond)
+	defer ticker.Stop()
+	for {
+		err := syscall.Kill(pid, syscall.Signal(0))
+		if errors.Is(err, syscall.ESRCH) {
+			return
+		}
+		if err != nil {
+			t.Fatalf("Kill(%d, 0) error = %v", pid, err)
+		}
+		select {
+		case <-ticker.C:
+		case <-deadline.C:
+			t.Fatalf("process %d from %q did not exit", pid, path)
 		}
 	}
 }

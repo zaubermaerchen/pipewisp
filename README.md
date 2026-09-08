@@ -30,8 +30,10 @@ flowchart LR
 ```
 
 The solid path is the data path: stdout contains only the original stream bytes
-in their original order. Hooks branch from lifecycle events and run
-synchronously; their stdout and stderr are both directed to pipewisp's stderr.
+in their original order. Hooks branch from lifecycle events; their stdout and
+stderr are both directed to pipewisp's stderr. Lifecycle-boundary hooks run
+synchronously, while idle/resume hooks can opt into best-effort asynchronous
+execution with `.async`.
 
 ## Install and build
 
@@ -110,7 +112,8 @@ flowchart TD
 
 Each hook shown is optional, and the idle/resume path is active only when idle
 mode is configured. `idle transition` and `resume transition` are lifecycle
-events; their corresponding hooks are optional. Hooks run synchronously.
+events; their corresponding hooks are optional. Hooks run synchronously unless
+an idle/resume option uses the `.async` modifier.
 Failures are strict by default,
 and `--hook-timeout` starts a fresh timeout window for each invocation. With
 `--ignore-hook-errors`, ordinary hook command failures and hook timeouts are
@@ -123,15 +126,16 @@ Exit status sections remain authoritative for exact behavior and precedence.
 
 ```text
 pipewisp --version
-pipewisp [--name NAME] [--verbose] [--on-ready COMMAND] [--on-first-data COMMAND] [--on-shutdown COMMAND] [--idle DURATION] [--on-idle COMMAND] [--on-resume COMMAND] [--hook-timeout DURATION] [--ignore-hook-errors]
+pipewisp [--name NAME] [--verbose] [--on-ready COMMAND] [--on-first-data COMMAND] [--on-shutdown COMMAND] [--idle DURATION] [--on-idle COMMAND] [--on-idle.async COMMAND] [--on-resume COMMAND] [--on-resume.async COMMAND] [--hook-timeout DURATION] [--ignore-hook-errors]
 ```
 
 Each hook option is optional and may be specified at most once. `--idle` is a
 Go duration such as `250ms` or `2s`; it must be positive and must be used with
-at least one of `--verbose`, `--on-idle`, or `--on-resume`. The separated and
-equals forms are supported for options that take values. `--hook-timeout` is a
-positive Go duration that bounds each lifecycle hook invocation (`--on-ready`,
-`--on-first-data`, `--on-idle`, `--on-resume`, and `--on-shutdown`). A new
+at least one of `--verbose`, `--on-idle`, `--on-idle.async`, `--on-resume`, or
+`--on-resume.async`. The separated and equals forms are supported for options
+that take values. `--hook-timeout` is a positive Go duration that bounds each
+lifecycle hook invocation (`--on-ready`, `--on-first-data`, `--on-idle`,
+`--on-idle.async`, `--on-resume`, `--on-resume.async`, and `--on-shutdown`). A new
 timeout window starts for every invocation; when the option is omitted, hooks
 have no time limit. `--ignore-hook-errors` is a value-less opt-in flag; without
 it, hook failures remain strict and affect processing or final status as
@@ -177,6 +181,7 @@ producer | pipewisp --on-first-data 'printf "observed\\n"'
 producer | pipewisp --on-ready='prepare' --on-shutdown='cleanup'
 producer | pipewisp --on-ready='prepare' --on-first-data='observe' --on-shutdown='cleanup'
 producer | pipewisp --idle 2s --on-idle 'printf "idle\\n"' --on-resume 'printf "active\\n"'
+producer | pipewisp --idle 2s --on-idle.async 'notify-idle' --on-resume.async 'notify-active'
 producer | pipewisp --idle=250ms --on-idle='notify-idle'
 producer | pipewisp --verbose --idle 2s
 producer | pipewisp --name relay --verbose --idle 2s
@@ -190,8 +195,7 @@ pipewisp --help
 Duplicate options, unknown options, missing or empty commands or durations,
 invalid names, non-positive or invalid durations, invalid idle configurations,
 and positional arguments are errors. `--idle` without `--verbose`, `--on-idle`,
-or `--on-resume` fails with `--idle requires --verbose, --on-idle, or
---on-resume`. CLI parse and validation
+`--on-idle.async`, `--on-resume`, or `--on-resume.async` fails. CLI parse and validation
 diagnostics retain the ordinary `pipewisp:` prefix even when a valid `--name`
 appears elsewhere in the arguments. `--on-first-data` is independent of
 `--on-ready`, `--on-shutdown`, and idle mode; all lifecycle options may be used
@@ -199,13 +203,24 @@ together. The former `--on` and `--off` forms are not aliases and are rejected
 as unknown options.
 `--help` prints usage and exits successfully.
 
-Commands are executed synchronously in this order:
+Synchronous commands are executed in this order:
 
 1. `--on-ready`, if present
 2. read the first input data bytes, if any
 3. `--on-first-data`, if present, immediately after those bytes are observed
 4. write those first bytes and copy the remaining stdin-to-stdout stream
 5. `--on-shutdown`, if present, after EOF, an I/O error, or a handled signal
+
+`--on-idle.async` and `--on-resume.async` start their commands when the matching
+transition occurs and immediately resume stream processing. They may overlap
+with later invocations of the same hook. Their start failures, non-zero exits,
+and timeouts are diagnostic-only and do not affect pipewisp's exit status.
+Running asynchronous hooks are stopped and reaped before the synchronous
+`--on-shutdown` hook runs. The synchronous and asynchronous forms of each idle
+or resume hook are mutually exclusive; `--on-ready.async` and
+`--on-shutdown.async` are unsupported. A failure while stopping an async hook
+boundary during shutdown is diagnostic-only; the intentional cancellation is
+not classified as an async hook failure.
 
 The first-data command runs exactly once and only when the input contains at
 least one byte. It completes before the first input byte is written to stdout;
@@ -236,9 +251,9 @@ grandchildren therefore stop with the shell; a child that deliberately calls
 may remain outside that boundary. On Windows, each hook is assigned to a
 private Job Object before its `cmd.exe` primary thread is resumed, and
 cancellation terminates that job. A process that explicitly breaks away may
-remain outside that boundary. These limits
-apply to synchronous hooks; pipewisp does not provide an asynchronous hook or
-supervise deliberately detached work. A handled SIGINT—or, on Unix, SIGTERM or
+remain outside that boundary. These limits apply to synchronous and
+asynchronous hooks; pipewisp does not supervise deliberately detached work. A
+handled SIGINT—or, on Unix, SIGTERM or
 SIGHUP—stops a running hook immediately instead of waiting for its timeout; a
 handled signal wins a timeout race, the signal status remains the final status,
 and the `on-shutdown` context keeps the original completion reason. SIGHUP is
@@ -247,7 +262,8 @@ Unix-only and does not change the existing Windows interrupt contract.
 With `--ignore-hook-errors`, command failures and hook timeouts are still
 reported to stderr but do not by themselves stop an otherwise continuing
 lifecycle or change its final status. The policy applies uniformly to
-`ready`, `first-data`, `idle`, `resume`, and `shutdown`. In particular, a failed first-data
+`ready`, `first-data`, `idle`, `resume`, and `shutdown`. Async idle/resume hooks
+are diagnostic-only even without this option. In particular, a failed first-data
 hook still preserves its already-read bytes and then continues reading later
 input, and an ignored `shutdown` failure preserves the result that caused cleanup
 to run. The option does not ignore handled signals, stdin read failures, stdout
@@ -255,8 +271,9 @@ write failures (including broken pipe), or CLI/configuration errors.
 
 ## Verbose diagnostics
 
-`--verbose` provides a human-readable view of lifecycle transitions and
-synchronous hook execution. All records go to stderr; passthrough stdout still
+`--verbose` provides a human-readable view of lifecycle transitions and both
+synchronous lifecycle-boundary and asynchronous idle/resume hook execution. All
+records go to stderr; passthrough stdout still
 contains only the original bytes, unchanged and in order. Lifecycle events are
 reported whether or not their corresponding hook is configured:
 
@@ -283,12 +300,22 @@ described below.
 Combining `--verbose` with `--idle` enables passive idle/resume observation;
 neither idle hook is required. Idle and resume events are reported when they
 occur, regardless of whether their corresponding hooks are configured. If
-`--on-idle` is absent, an idle transition produces no `type=hook` records or
-hook command output; if `--on-resume` is absent, a resume transition produces
-no `type=hook` records or hook command output. Other configured lifecycle hooks
+both `--on-idle` and `--on-idle.async` are absent, an idle transition produces
+no `type=hook` records or hook command output; if both `--on-resume` and
+`--on-resume.async` are absent, a resume transition produces no `type=hook`
+records or hook command output. Other configured lifecycle hooks
 retain their existing behavior. A shutdown record includes `reason=eof`,
 `reason=signal`, `reason=broken-pipe`, or `reason=io-error` when that existing
 lifecycle reason applies; otherwise the field is omitted.
+
+For asynchronous hooks, `state=start` is emitted when the process is launched
+and the terminal record follows the direct process result once its process
+boundary is empty. A root process that exits normally is retained only while
+ordinary descendants remain, so they can be cleaned up on natural completion,
+timeout, or shutdown. Non-zero direct exits are diagnosed as soon as they are
+observed; descendant cleanup remains diagnostic-only. Records from overlapping
+asynchronous hooks may appear in any order relative to one another; each
+individual record is complete.
 
 When a hook is configured for an event, stderr follows this logical order:
 
@@ -297,6 +324,10 @@ When a hook is configured for an event, stderr follows this logical order:
 3. stdout and stderr forwarded from the hook, in unspecified relative order;
 4. exactly one hook terminal record; and
 5. the existing hook-failure diagnostic, if the hook failed.
+
+For an asynchronous hook, a non-zero direct process exit is diagnosed when
+`Cmd.Wait` observes it; that diagnostic can therefore precede the terminal
+record while an ordinary descendant is still being reaped.
 
 Representative hook records are:
 
@@ -396,7 +427,7 @@ normal platform-specific meaning.
 | Other copy/I/O error | 1 | Report the error and run `--on-shutdown`, if present. |
 | `--on-ready` failure | 1 | Report the hook failure; do not copy data or run `--on-shutdown`. With `--ignore-hook-errors`, continue normally instead. |
 | `--on-first-data` failure | 1 | Report the hook failure, write the already-read first bytes unchanged, stop before reading more input, and run `--on-shutdown`, if present. With `--ignore-hook-errors`, continue reading after those bytes. |
-| `--on-idle` or `--on-resume` failure | 1 | Report the hook failure, continue copying, and run `--on-shutdown`, if present. With `--ignore-hook-errors`, the failure does not affect final status. |
+| `--on-idle` or `--on-resume` failure | 1 | Report the synchronous hook failure, continue copying, and run `--on-shutdown`, if present. With `--ignore-hook-errors`, the failure does not affect final status. Async idle/resume failures are diagnostic-only and preserve the stream result. |
 | `--on-shutdown` failure | 1 | Report the hook failure. With `--ignore-hook-errors`, preserve the pre-existing lifecycle result. |
 | SIGINT / Ctrl+C | 130 | Run `--on-shutdown` synchronously; this signal status wins if `--on-shutdown` also fails. |
 | SIGTERM (Unix) | 143 | Run `--on-shutdown` synchronously; this signal status wins if `--on-shutdown` also fails. |

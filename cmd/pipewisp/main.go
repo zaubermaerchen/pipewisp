@@ -39,6 +39,7 @@ func runWithOptions(opts options, in io.Reader, out io.Writer, diagnostics io.Wr
 	if opts.verbose || opts.nameSet {
 		diagnostics = reporter
 	}
+	asyncHooks := newAsyncHookManager(diagnostics)
 
 	// Subscribe before ready so a signal during readiness is retained for final status selection.
 	tracker, stopSignals := subscribePassthroughSignals()
@@ -64,7 +65,7 @@ func runWithOptions(opts options, in io.Reader, out io.Writer, diagnostics io.Wr
 		// Readiness completed under interruption; skip copying but still proceed to optional cleanup.
 		done = completion{signal: sig}
 	} else if opts.idleSet {
-		done = runIdleCopyWithState(opts, in, countedOut, diagnostics, tracker, state)
+		done = runIdleCopyWithAsyncManager(opts, in, countedOut, diagnostics, tracker, state, asyncHooks)
 	} else {
 		copyDone := make(chan error, 1)
 		input := in
@@ -110,6 +111,7 @@ func runWithOptions(opts options, in io.Reader, out io.Writer, diagnostics io.Wr
 		}
 		closeInput(in)
 	}
+	asyncHooks.stopAndWait()
 	// Keep the snapshot above at the completion-selection point, but defer its
 	// record until an in-flight first-data hook has finished writing its own
 	// terminal and failure diagnostics. This preserves lifecycle output order

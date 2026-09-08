@@ -86,6 +86,14 @@ type hookStartError struct{ err error }
 func (err *hookStartError) Error() string { return err.err.Error() }
 func (err *hookStartError) Unwrap() error { return err.err }
 
+type hookBoundaryStopError struct{ err error }
+
+func (err *hookBoundaryStopError) Error() string {
+	return fmt.Sprintf("stop hook execution boundary: %v", err.err)
+}
+
+func (err *hookBoundaryStopError) Unwrap() error { return err.err }
+
 type hookProcessError struct {
 	err   error
 	state *os.ProcessState
@@ -105,7 +113,13 @@ func (err *hookSignalError) Unwrap() error {
 	return err.waitErr
 }
 
-func executeHookWithControl(command string, context hookContext, diagnostics io.Writer, timeout time.Duration, tracker *signalTracker, beforeStart func()) error {
+type hookExecution struct {
+	boundary *hookBoundary
+	hook     *exec.Cmd
+	waitDone chan error
+}
+
+func startHookExecution(command string, context hookContext, diagnostics io.Writer, beforeStart func()) (*hookExecution, error) {
 	hook := newShellCommand(command)
 	// Hooks must not consume bytes that belong to the passthrough stream.
 	hook.Stdin = nil
@@ -116,6 +130,63 @@ func executeHookWithControl(command string, context hookContext, diagnostics io.
 	// when the descriptors close promptly.
 	hook.WaitDelay = hookWaitDelay
 	hook.Env = hookEnvironment(context)
+
+	boundary, err := newHookBoundary()
+	if err != nil {
+		return nil, err
+	}
+	if beforeStart != nil {
+		beforeStart()
+	}
+	if err := boundary.start(hook); err != nil {
+		boundary.close()
+		return nil, err
+	}
+	waitDone := make(chan error, 1)
+	go func() {
+		// Cmd.Wait owns the output-copy goroutines and uses WaitDelay to bound
+		// any descendant-held descriptors while still reaping the direct process.
+		waitDone <- hook.Wait()
+	}()
+	return &hookExecution{boundary: boundary, hook: hook, waitDone: waitDone}, nil
+}
+
+func (execution *hookExecution) close() {
+	execution.boundary.close()
+}
+
+// stopAndWait stops an async hook during lifecycle cleanup without classifying
+// that intentional cancellation as a timeout or a hook failure. A wait result
+// already observed by the async owner is passed through so Cmd.Wait remains a
+// direct-process result, independent of descendant cleanup. It also returns
+// the raw wait result so cancellation can still diagnose a natural exit.
+func (execution *hookExecution) stopAndWait(waitErr error, waitReceived bool) (error, error, bool) {
+	if !waitReceived {
+		select {
+		case waitErr = <-execution.waitDone:
+			waitReceived = true
+		default:
+		}
+	}
+	stopErr := execution.boundary.stop(execution.hook)
+	if !waitReceived {
+		waitErr = <-execution.waitDone
+		waitReceived = true
+	}
+	normalizedWaitErr := normalizeHookWaitError(waitErr)
+	if stopErr != nil && !errors.Is(stopErr, os.ErrProcessDone) {
+		return wrapHookProcessError(errors.Join(&hookBoundaryStopError{err: stopErr}, normalizedWaitErr), execution.hook.ProcessState), waitErr, waitReceived
+	}
+	if errors.Is(stopErr, os.ErrProcessDone) {
+		if normalizedWaitErr == nil {
+			return os.ErrProcessDone, waitErr, waitReceived
+		}
+		return errors.Join(os.ErrProcessDone, wrapHookProcessError(normalizedWaitErr, execution.hook.ProcessState)), waitErr, waitReceived
+	}
+	return wrapHookProcessError(normalizedWaitErr, execution.hook.ProcessState), waitErr, waitReceived
+}
+
+func executeHookWithControl(command string, context hookContext, diagnostics io.Writer, timeout time.Duration, tracker *signalTracker, beforeStart func()) error {
 	if tracker != nil {
 		// A signal accepted before this invocation belongs to the surrounding
 		// lifecycle outcome, not to a hook that has not started yet. Drain it
@@ -129,23 +200,14 @@ func executeHookWithControl(command string, context hookContext, diagnostics io.
 		signalGeneration, signalDone = tracker.beginHookObservation()
 		signalC = tracker.signals
 	}
-	boundary, err := newHookBoundary()
+	execution, err := startHookExecution(command, context, diagnostics, beforeStart)
 	if err != nil {
 		return &hookStartError{err: err}
 	}
-	defer boundary.close()
-	if beforeStart != nil {
-		beforeStart()
-	}
-	if err := boundary.start(hook); err != nil {
-		return &hookStartError{err: err}
-	}
-	waitDone := make(chan error, 1)
-	go func() {
-		// Cmd.Wait owns the output-copy goroutines and uses WaitDelay to bound
-		// any descendant-held descriptors while still reaping the direct process.
-		waitDone <- hook.Wait()
-	}()
+	defer execution.close()
+	hook := execution.hook
+	boundary := execution.boundary
+	waitDone := execution.waitDone
 
 	var timeoutC <-chan time.Time
 	var timer *time.Timer
@@ -211,7 +273,7 @@ func stopHookAndWait(boundary *hookBoundary, hook *exec.Cmd, waitDone <-chan err
 	waitErr := <-waitDone
 	normalizedWaitErr := normalizeHookWaitError(waitErr)
 	if stopErr != nil && !errors.Is(stopErr, os.ErrProcessDone) {
-		return wrapHookProcessError(errors.Join(fmt.Errorf("stop hook execution boundary: %w", stopErr), normalizedWaitErr), hook.ProcessState)
+		return wrapHookProcessError(errors.Join(&hookBoundaryStopError{err: stopErr}, normalizedWaitErr), hook.ProcessState)
 	}
 	if errors.Is(stopErr, os.ErrProcessDone) || !boundary.killedRoot(hook.ProcessState) {
 		return wrapHookProcessError(normalizedWaitErr, hook.ProcessState)
