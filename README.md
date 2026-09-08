@@ -52,8 +52,9 @@ go install github.com/zaubermaerchen/pipewisp/cmd/pipewisp@latest
 
 Tagged binaries are available from the repository's
 [GitHub Releases](https://github.com/zaubermaerchen/pipewisp/releases). Each
-release provides these six archives: `linux_amd64`, `linux_arm64`,
-`darwin_amd64`, `darwin_arm64`, `windows_amd64`, and `windows_arm64`.
+release provides these seven archives: `linux_amd64`, `linux_arm64`,
+`linux_armv6`, `darwin_amd64`, `darwin_arm64`, `windows_amd64`, and
+`windows_arm64`.
 
 Download the archive for your platform and verify it with the accompanying
 checksums file before extracting it. For example, on Linux:
