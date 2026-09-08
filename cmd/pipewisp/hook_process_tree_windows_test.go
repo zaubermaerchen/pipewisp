@@ -186,9 +186,9 @@ func TestAsyncHookRetainedChildTimeoutReportsTimeout(t *testing.T) {
 	manager.start("on-idle", windowsHookProcessTreeCommand(t, "root"), hookContext{event: "idle"}, 500*time.Millisecond)
 	waitForWindowsHookProcessMarker(t, child, nil, nil)
 	waitForWindowsHookProcessMarker(t, grandchild, nil, nil)
-	childHandle := openWindowsHookProcess(t, readWindowsHookPID(t, child))
 	grandchildHandle := openWindowsHookProcess(t, readWindowsHookPID(t, grandchild))
-	waitForWindowsHookProcessExit(t, childHandle, "child")
+	// The gate is released before start, so the root may already be reaped when
+	// its marker is observed; only the retained grandchild needs a live handle.
 	waitForEvent(t, events, "type=hook event=idle state=timeout")
 	manager.stopAndWait()
 	waitForWindowsHookProcessExit(t, grandchildHandle, "grandchild")
