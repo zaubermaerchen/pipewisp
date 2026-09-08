@@ -88,13 +88,29 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        goos:
-          - linux
-          - darwin
-          - windows
-        goarch:
-          - amd64
-          - arm64
+        include:
+          - goos: linux
+            goarch: amd64
+            release_arch: amd64
+          - goos: linux
+            goarch: arm64
+            release_arch: arm64
+          - goos: darwin
+            goarch: amd64
+            release_arch: amd64
+          - goos: darwin
+            goarch: arm64
+            release_arch: arm64
+          - goos: windows
+            goarch: amd64
+            release_arch: amd64
+          - goos: windows
+            goarch: arm64
+            release_arch: arm64
+          - goos: linux
+            goarch: arm
+            goarm: 6
+            release_arch: armv6
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -108,9 +124,11 @@ jobs:
           VERSION: ${{ needs.prepare.outputs.version }}
           TARGET_OS: ${{ matrix.goos }}
           TARGET_ARCH: ${{ matrix.goarch }}
+          TARGET_RELEASE_ARCH: ${{ matrix.release_arch }}
+          TARGET_GOARM: ${{ matrix.goarm }}
         run: |
           set -euo pipefail
-          package_name="pipewisp_${VERSION}_${TARGET_OS}_${TARGET_ARCH}"
+          package_name="pipewisp_${VERSION}_${TARGET_OS}_${TARGET_RELEASE_ARCH}"
           staging="${RUNNER_TEMP}/${package_name}"
           package_dir="${RUNNER_TEMP}/pipewisp-package"
           rm -rf "$staging" "$package_dir"
@@ -120,7 +138,11 @@ jobs:
           if [[ "$TARGET_OS" == windows ]]; then
             binary+=.exe
           fi
-          CGO_ENABLED=0 GOOS="$TARGET_OS" GOARCH="$TARGET_ARCH" \
+          build_env=(CGO_ENABLED=0 GOOS="$TARGET_OS" GOARCH="$TARGET_ARCH")
+          if [[ -n "$TARGET_GOARM" ]]; then
+            build_env+=(GOARM="$TARGET_GOARM")
+          fi
+          env "${build_env[@]}" \
             go build -trimpath -ldflags="-s -w -X main.version=${VERSION}" \
               -o "$staging/$package_name/$binary" ./cmd/pipewisp
           cp LICENSE README.md "$staging/$package_name/"
@@ -163,7 +185,7 @@ jobs:
       - name: Upload archive
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: pipewisp-${{ matrix.goos }}-${{ matrix.goarch }}
+          name: pipewisp-${{ matrix.goos }}-${{ matrix.release_arch }}
           path: ${{ runner.temp }}/pipewisp-package/*
           if-no-files-found: error
           retention-days: 1
@@ -195,14 +217,15 @@ jobs:
           expected=(
             "pipewisp_${VERSION}_linux_amd64.tar.gz"
             "pipewisp_${VERSION}_linux_arm64.tar.gz"
+            "pipewisp_${VERSION}_linux_armv6.tar.gz"
             "pipewisp_${VERSION}_darwin_amd64.tar.gz"
             "pipewisp_${VERSION}_darwin_arm64.tar.gz"
             "pipewisp_${VERSION}_windows_amd64.zip"
             "pipewisp_${VERSION}_windows_arm64.zip"
           )
           mapfile -t actual < <(find release -mindepth 1 -maxdepth 1 -type f -printf '%f\n' | sort)
-          if (( ${#actual[@]} != 6 )); then
-            echo "expected six archives, found ${#actual[@]}" >&2
+          if (( ${#actual[@]} != 7 )); then
+            echo "expected seven archives, found ${#actual[@]}" >&2
             exit 1
           fi
           printf '%s\n' "${expected[@]}" | sort > expected.txt
@@ -234,6 +257,7 @@ jobs:
           archives=(
             "release/pipewisp_${VERSION}_linux_amd64.tar.gz"
             "release/pipewisp_${VERSION}_linux_arm64.tar.gz"
+            "release/pipewisp_${VERSION}_linux_armv6.tar.gz"
             "release/pipewisp_${VERSION}_darwin_amd64.tar.gz"
             "release/pipewisp_${VERSION}_darwin_arm64.tar.gz"
             "release/pipewisp_${VERSION}_windows_amd64.zip"
