@@ -20,6 +20,20 @@ const hookJobTerminationExitCode uint32 = 1
 type hookBoundary struct {
 	job             windows.Handle
 	rootExitedFirst bool
+	tracked         bool
+}
+
+// hookJobObjectBasicAccountingInformation mirrors the Windows SDK structure;
+// x/sys/windows exposes the query but not this information type.
+type hookJobObjectBasicAccountingInformation struct {
+	TotalUserTime             int64
+	TotalKernelTime           int64
+	ThisPeriodTotalUserTime   int64
+	ThisPeriodTotalKernelTime int64
+	TotalPageFaultCount       uint32
+	TotalProcesses            uint32
+	ActiveProcesses           uint32
+	TotalTerminatedProcesses  uint32
 }
 
 func newShellCommand(command string) *exec.Cmd {
@@ -65,9 +79,11 @@ func (boundary *hookBoundary) start(hook *exec.Cmd) error {
 		boundary.cleanupStartedHook(hook, false)
 		return assignErr
 	}
+	boundary.tracked = true
 
 	if err := resumeHookPrimaryThread(uint32(hook.Process.Pid)); err != nil {
 		boundary.cleanupStartedHook(hook, true)
+		boundary.tracked = false
 		return err
 	}
 	return nil
@@ -88,17 +104,62 @@ func (boundary *hookBoundary) cleanupStartedHook(hook *exec.Cmd, assigned bool) 
 }
 
 func (boundary *hookBoundary) stop(hook *exec.Cmd) error {
-	if boundary.job == 0 {
+	if boundary.job == 0 || !boundary.tracked {
 		return os.ErrProcessDone
 	}
 	exited, observationErr := hookProcessExited(hook)
 	boundary.rootExitedFirst = exited
+	running, checkErr := boundary.hasRunningProcesses()
+	if checkErr != nil {
+		// A failed accounting query must not skip termination: the Job handle
+		// remains the ownership boundary even when its process count is opaque.
+		running = true
+	}
+	if !running {
+		if checkErr != nil {
+			return errors.Join(checkErr, observationErr)
+		}
+		return observationErrOrProcessDone(observationErr)
+	}
 	if err := windows.TerminateJobObject(boundary.job, hookJobTerminationExitCode); err != nil {
 		// Direct termination keeps reap and output drain bounded, but the Job
 		// failure is retained because descendant cleanup is no longer guaranteed.
-		return errors.Join(observationErr, err, hook.Process.Kill())
+		stopErrors := []error{err}
+		if observationErr != nil && !errors.Is(observationErr, os.ErrProcessDone) {
+			stopErrors = append(stopErrors, observationErr)
+		}
+		if killErr := hook.Process.Kill(); killErr != nil && !errors.Is(killErr, os.ErrProcessDone) {
+			stopErrors = append(stopErrors, killErr)
+		}
+		if checkErr != nil {
+			stopErrors = append(stopErrors, checkErr)
+		}
+		return errors.Join(stopErrors...)
 	}
+	boundary.tracked = false
 	return observationErr
+}
+
+func (boundary *hookBoundary) hasRunningProcesses() (bool, error) {
+	if boundary.job == 0 || !boundary.tracked {
+		return false, nil
+	}
+	info := hookJobObjectBasicAccountingInformation{}
+	var returned uint32
+	if err := windows.QueryInformationJobObject(
+		boundary.job,
+		windows.JobObjectBasicAccountingInformation,
+		uintptr(unsafe.Pointer(&info)),
+		uint32(unsafe.Sizeof(info)),
+		&returned,
+	); err != nil {
+		return false, err
+	}
+	if info.ActiveProcesses == 0 {
+		boundary.tracked = false
+		return false, nil
+	}
+	return true, nil
 }
 
 func (boundary *hookBoundary) killedRoot(*os.ProcessState) bool {
@@ -106,11 +167,19 @@ func (boundary *hookBoundary) killedRoot(*os.ProcessState) bool {
 }
 
 func (boundary *hookBoundary) close() {
+	boundary.tracked = false
 	if boundary.job == 0 {
 		return
 	}
 	_ = windows.CloseHandle(boundary.job)
 	boundary.job = 0
+}
+
+func observationErrOrProcessDone(err error) error {
+	if err != nil {
+		return err
+	}
+	return os.ErrProcessDone
 }
 
 func resumeHookPrimaryThread(processID uint32) error {

@@ -115,8 +115,8 @@ func TestParseRejectsInvalidIdleOptions(t *testing.T) {
 		{name: "invalid duration with verbose", args: []string{"--verbose", "--idle=soon"}, want: "invalid duration for --idle"},
 		{name: "zero duration with verbose", args: []string{"--verbose", "--idle=0s"}, want: "--idle must be greater than zero"},
 		{name: "negative duration with verbose", args: []string{"--verbose", "--idle", "-1s"}, want: "--idle must be greater than zero"},
-		{name: "idle alone", args: []string{"--idle=1s"}, want: "--idle requires --verbose, --on-idle, or --on-resume"},
-		{name: "idle with name alone", args: []string{"--name", "relay", "--idle=1s"}, want: "--idle requires --verbose, --on-idle, or --on-resume"},
+		{name: "idle alone", args: []string{"--idle=1s"}, want: "--idle requires --verbose, --on-idle, --on-idle.async, --on-resume, or --on-resume.async"},
+		{name: "idle with name alone", args: []string{"--name", "relay", "--idle=1s"}, want: "--idle requires --verbose, --on-idle, --on-idle.async, --on-resume, or --on-resume.async"},
 		{name: "hook without idle", args: []string{"--on-idle", "idle"}, want: "--on-idle requires --idle"},
 		{name: "empty idle hook", args: []string{"--idle=1s", "--on-idle="}, want: "empty command for --on-idle"},
 	}

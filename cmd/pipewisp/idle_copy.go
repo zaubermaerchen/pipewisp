@@ -172,6 +172,7 @@ type idleCopyRunner struct {
 	pendingErr    error
 	firstDataSeen bool
 	eventContext  hookContext
+	asyncHooks    *asyncHookManager
 	done          completion
 }
 
@@ -181,6 +182,16 @@ func runIdleCopy(opts options, in io.Reader, out io.Writer, diagnostics io.Write
 }
 
 func runIdleCopyWithState(opts options, in io.Reader, out io.Writer, diagnostics io.Writer, tracker *signalTracker, state *lifecycleState) completion {
+	asyncHooks := newAsyncHookManager(diagnostics)
+	done := runIdleCopyWithAsyncManager(opts, in, out, diagnostics, tracker, state, asyncHooks)
+	asyncHooks.stopAndWait()
+	return done
+}
+
+func runIdleCopyWithAsyncManager(opts options, in io.Reader, out io.Writer, diagnostics io.Writer, tracker *signalTracker, state *lifecycleState, asyncHooks *asyncHookManager) completion {
+	if asyncHooks.reporter == nil {
+		diagnostics = asyncHooks.diagnostics
+	}
 	runner := &idleCopyRunner{
 		opts:        opts,
 		diagnostics: diagnostics,
@@ -189,6 +200,7 @@ func runIdleCopyWithState(opts options, in io.Reader, out io.Writer, diagnostics
 		pump:        newIdleReadPump(in),
 		writePump:   newIdleWritePump(out),
 		timer:       time.NewTimer(opts.idle),
+		asyncHooks:  asyncHooks,
 	}
 	runner.stopTimer()
 	defer func() {
@@ -300,7 +312,10 @@ func (runner *idleCopyRunner) handleRead(result idleReadResult) bool {
 			}
 			// A resume hook is part of the transition into active mode. A
 			// failed hook does not roll back the transition or discard data.
-			if runner.opts.onResumeSet {
+			if runner.opts.onResumeAsyncSet {
+				resumeContext = hookContextForInvocation(runner.state, "resume", resumeContext, runner.opts.verbose)
+				runner.asyncHooks.start("on-resume", runner.opts.onResumeAsync, resumeContext, runner.opts.hookTimeout)
+			} else if runner.opts.onResumeSet {
 				if sig := runner.pollSignal(); sig != nil {
 					runner.abortForSignal(sig)
 					return false
@@ -309,10 +324,10 @@ func (runner *idleCopyRunner) handleRead(result idleReadResult) bool {
 				if err := runHookWithContextAndTracker("on-resume", runner.opts.onResume, resumeContext, runner.diagnostics, runner.opts.hookTimeout, runner.tracker, runner.opts.ignoreHookErrors); err != nil {
 					runner.done.resumeErr = err
 				}
-				if sig := runner.pollSignal(); sig != nil {
-					runner.abortForSignal(sig)
-					return false
-				}
+			}
+			if sig := runner.pollSignal(); sig != nil {
+				runner.abortForSignal(sig)
+				return false
 			}
 			runner.idle = false
 		}
@@ -399,7 +414,10 @@ func (runner *idleCopyRunner) handleIdle() bool {
 			reporter.event(idleContext)
 		}
 	}
-	if runner.opts.onIdleSet {
+	if runner.opts.onIdleAsyncSet {
+		idleContext = hookContextForInvocation(runner.state, "idle", idleContext, runner.opts.verbose)
+		runner.asyncHooks.start("on-idle", runner.opts.onIdleAsync, idleContext, runner.opts.hookTimeout)
+	} else if runner.opts.onIdleSet {
 		if sig := runner.pollSignal(); sig != nil {
 			runner.abortForSignal(sig)
 			return false
@@ -408,10 +426,10 @@ func (runner *idleCopyRunner) handleIdle() bool {
 		if err := runHookWithContextAndTracker("on-idle", runner.opts.onIdle, idleContext, runner.diagnostics, runner.opts.hookTimeout, runner.tracker, runner.opts.ignoreHookErrors); err != nil {
 			runner.done.idleErr = err
 		}
-		if sig := runner.pollSignal(); sig != nil {
-			runner.abortForSignal(sig)
-			return false
-		}
+	}
+	if sig := runner.pollSignal(); sig != nil {
+		runner.abortForSignal(sig)
+		return false
 	}
 	if !runner.requested {
 		runner.requestRead()

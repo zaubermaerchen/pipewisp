@@ -29,8 +29,12 @@ type options struct {
 	ignoreHookErrors bool
 	onIdle           string
 	onIdleSet        bool
+	onIdleAsync      string
+	onIdleAsyncSet   bool
 	onResume         string
 	onResumeSet      bool
+	onResumeAsync    string
+	onResumeAsyncSet bool
 }
 
 func parseArgs(args []string) (options, bool, error) {
@@ -174,6 +178,9 @@ func parseArgs(args []string) (options, bool, error) {
 			}
 			opts.idle, opts.idleSet = value, true
 		case arg == "--on-idle":
+			if opts.onIdleAsyncSet {
+				return options{}, false, fmt.Errorf("--on-idle and --on-idle.async are mutually exclusive")
+			}
 			if opts.onIdleSet {
 				return options{}, false, fmt.Errorf("--on-idle specified more than once")
 			}
@@ -184,6 +191,9 @@ func parseArgs(args []string) (options, bool, error) {
 			opts.onIdle, opts.onIdleSet = value, true
 			i = next
 		case strings.HasPrefix(arg, "--on-idle="):
+			if opts.onIdleAsyncSet {
+				return options{}, false, fmt.Errorf("--on-idle and --on-idle.async are mutually exclusive")
+			}
 			if opts.onIdleSet {
 				return options{}, false, fmt.Errorf("--on-idle specified more than once")
 			}
@@ -192,7 +202,35 @@ func parseArgs(args []string) (options, bool, error) {
 				return options{}, false, err
 			}
 			opts.onIdle, opts.onIdleSet = value, true
+		case arg == "--on-idle.async":
+			if opts.onIdleSet {
+				return options{}, false, fmt.Errorf("--on-idle and --on-idle.async are mutually exclusive")
+			}
+			if opts.onIdleAsyncSet {
+				return options{}, false, fmt.Errorf("--on-idle.async specified more than once")
+			}
+			value, next, err := parseSeparateValue(args, i, "--on-idle.async")
+			if err != nil {
+				return options{}, false, err
+			}
+			opts.onIdleAsync, opts.onIdleAsyncSet = value, true
+			i = next
+		case strings.HasPrefix(arg, "--on-idle.async="):
+			if opts.onIdleSet {
+				return options{}, false, fmt.Errorf("--on-idle and --on-idle.async are mutually exclusive")
+			}
+			if opts.onIdleAsyncSet {
+				return options{}, false, fmt.Errorf("--on-idle.async specified more than once")
+			}
+			value, err := validateCommand(arg[len("--on-idle.async="):], "--on-idle.async")
+			if err != nil {
+				return options{}, false, err
+			}
+			opts.onIdleAsync, opts.onIdleAsyncSet = value, true
 		case arg == "--on-resume":
+			if opts.onResumeAsyncSet {
+				return options{}, false, fmt.Errorf("--on-resume and --on-resume.async are mutually exclusive")
+			}
 			if opts.onResumeSet {
 				return options{}, false, fmt.Errorf("--on-resume specified more than once")
 			}
@@ -203,6 +241,9 @@ func parseArgs(args []string) (options, bool, error) {
 			opts.onResume, opts.onResumeSet = value, true
 			i = next
 		case strings.HasPrefix(arg, "--on-resume="):
+			if opts.onResumeAsyncSet {
+				return options{}, false, fmt.Errorf("--on-resume and --on-resume.async are mutually exclusive")
+			}
 			if opts.onResumeSet {
 				return options{}, false, fmt.Errorf("--on-resume specified more than once")
 			}
@@ -211,6 +252,31 @@ func parseArgs(args []string) (options, bool, error) {
 				return options{}, false, err
 			}
 			opts.onResume, opts.onResumeSet = value, true
+		case arg == "--on-resume.async":
+			if opts.onResumeSet {
+				return options{}, false, fmt.Errorf("--on-resume and --on-resume.async are mutually exclusive")
+			}
+			if opts.onResumeAsyncSet {
+				return options{}, false, fmt.Errorf("--on-resume.async specified more than once")
+			}
+			value, next, err := parseSeparateValue(args, i, "--on-resume.async")
+			if err != nil {
+				return options{}, false, err
+			}
+			opts.onResumeAsync, opts.onResumeAsyncSet = value, true
+			i = next
+		case strings.HasPrefix(arg, "--on-resume.async="):
+			if opts.onResumeSet {
+				return options{}, false, fmt.Errorf("--on-resume and --on-resume.async are mutually exclusive")
+			}
+			if opts.onResumeAsyncSet {
+				return options{}, false, fmt.Errorf("--on-resume.async specified more than once")
+			}
+			value, err := validateCommand(arg[len("--on-resume.async="):], "--on-resume.async")
+			if err != nil {
+				return options{}, false, err
+			}
+			opts.onResumeAsync, opts.onResumeAsyncSet = value, true
 		case strings.HasPrefix(arg, "-"):
 			return options{}, false, fmt.Errorf("unknown option %s", arg)
 		default:
@@ -227,11 +293,17 @@ func parseArgs(args []string) (options, bool, error) {
 	if opts.onIdleSet && !opts.idleSet {
 		return options{}, false, fmt.Errorf("--on-idle requires --idle")
 	}
+	if opts.onIdleAsyncSet && !opts.idleSet {
+		return options{}, false, fmt.Errorf("--on-idle.async requires --idle")
+	}
 	if opts.onResumeSet && !opts.idleSet {
 		return options{}, false, fmt.Errorf("--on-resume requires --idle")
 	}
-	if opts.idleSet && !opts.verbose && !opts.onIdleSet && !opts.onResumeSet {
-		return options{}, false, fmt.Errorf("--idle requires --verbose, --on-idle, or --on-resume")
+	if opts.onResumeAsyncSet && !opts.idleSet {
+		return options{}, false, fmt.Errorf("--on-resume.async requires --idle")
+	}
+	if opts.idleSet && !opts.verbose && !opts.onIdleSet && !opts.onIdleAsyncSet && !opts.onResumeSet && !opts.onResumeAsyncSet {
+		return options{}, false, fmt.Errorf("--idle requires --verbose, --on-idle, --on-idle.async, --on-resume, or --on-resume.async")
 	}
 
 	return opts, false, nil
@@ -330,5 +402,5 @@ func isBidiControl(r rune) bool {
 }
 
 func printUsage(out io.Writer) {
-	_, _ = out.Write([]byte("Usage: pipewisp [--name NAME] [--verbose] [--on-ready COMMAND] [--on-first-data COMMAND] [--on-shutdown COMMAND] [--idle DURATION] [--on-idle COMMAND] [--on-resume COMMAND] [--hook-timeout DURATION] [--ignore-hook-errors]\n       pipewisp --version\n"))
+	_, _ = out.Write([]byte("Usage: pipewisp [--name NAME] [--verbose] [--on-ready COMMAND] [--on-first-data COMMAND] [--on-shutdown COMMAND] [--idle DURATION] [--on-idle COMMAND] [--on-idle.async COMMAND] [--on-resume COMMAND] [--on-resume.async COMMAND] [--hook-timeout DURATION] [--ignore-hook-errors]\n       pipewisp --version\n"))
 }

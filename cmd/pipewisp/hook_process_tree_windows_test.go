@@ -7,6 +7,7 @@ package main
 import (
 	"bytes"
 	"errors"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -35,6 +36,9 @@ func TestMain(m *testing.M) {
 		return
 	case "root":
 		hookProcessTreeRoot()
+		return
+	case "root-failure":
+		hookProcessTreeRootFailure()
 		return
 	case "grandchild":
 		hookProcessTreeGrandchild()
@@ -89,6 +93,188 @@ func TestHookSignalStopsDescendantAfterRootNaturalExit(t *testing.T) {
 	waitForWindowsHookProcessExit(t, grandchildHandle, "grandchild")
 	if _, statErr := os.Stat(completed); !os.IsNotExist(statErr) {
 		t.Fatalf("grandchild completion marker exists after signal: err = %v", statErr)
+	}
+}
+
+func TestAsyncHookRetainsBoundaryAfterRootNaturalExit(t *testing.T) {
+	directory := t.TempDir()
+	child := filepath.Join(directory, "child.started")
+	grandchild := filepath.Join(directory, "grandchild.started")
+	completed := filepath.Join(directory, "completed")
+	gate := filepath.Join(directory, "release")
+	t.Setenv(hookProcessTreeChildEnv, child)
+	t.Setenv(hookProcessTreeGrandchildEnv, grandchild)
+	t.Setenv(hookProcessTreeCompletedEnv, completed)
+	t.Setenv(hookProcessTreeGateEnv, gate)
+	t.Setenv(hookProcessTreeSleepEnv, "3s")
+
+	manager := newAsyncHookManager(io.Discard)
+	defer manager.stopAndWait()
+	manager.start("on-idle", windowsHookProcessTreeCommand(t, "root"), hookContext{event: "idle"}, 0)
+	waitForWindowsHookProcessMarker(t, child, nil, nil)
+	waitForWindowsHookProcessMarker(t, grandchild, nil, nil)
+	childHandle := openWindowsHookProcess(t, readWindowsHookPID(t, child))
+	grandchildHandle := openWindowsHookProcess(t, readWindowsHookPID(t, grandchild))
+	if err := os.WriteFile(gate, []byte("release"), 0600); err != nil {
+		t.Fatalf("WriteFile(%q) error = %v", gate, err)
+	}
+	waitForWindowsHookProcessExit(t, childHandle, "child")
+	// Let Cmd.Wait reach the old WaitDelay path after the root process exits.
+	time.Sleep(hookWaitDelay + 100*time.Millisecond)
+	manager.stopAndWait()
+	waitForWindowsHookProcessExit(t, grandchildHandle, "grandchild")
+	if _, err := os.Stat(completed); err == nil {
+		t.Fatal("grandchild completion marker exists after async shutdown")
+	}
+}
+
+func TestAsyncHookRetainsBoundaryWithClosedOutput(t *testing.T) {
+	directory := t.TempDir()
+	child := filepath.Join(directory, "child.started")
+	grandchild := filepath.Join(directory, "grandchild.started")
+	completed := filepath.Join(directory, "completed")
+	gate := filepath.Join(directory, "release")
+	t.Setenv(hookProcessTreeChildEnv, child)
+	t.Setenv(hookProcessTreeGrandchildEnv, grandchild)
+	t.Setenv(hookProcessTreeCompletedEnv, completed)
+	t.Setenv(hookProcessTreeGateEnv, gate)
+	t.Setenv(hookProcessTreeSleepEnv, "3s")
+
+	var diagnostics bytes.Buffer
+	manager := newAsyncHookManager(&diagnostics)
+	defer manager.stopAndWait()
+	command := windowsHookProcessTreeCommand(t, "root") + " >NUL 2>NUL"
+	manager.start("on-idle", command, hookContext{event: "idle"}, 0)
+	waitForWindowsHookProcessMarker(t, child, nil, nil)
+	waitForWindowsHookProcessMarker(t, grandchild, nil, nil)
+	childHandle := openWindowsHookProcess(t, readWindowsHookPID(t, child))
+	grandchildHandle := openWindowsHookProcess(t, readWindowsHookPID(t, grandchild))
+	if err := os.WriteFile(gate, []byte("release"), 0600); err != nil {
+		t.Fatalf("WriteFile(%q) error = %v", gate, err)
+	}
+	waitForWindowsHookProcessExit(t, childHandle, "child")
+	// Cmd.Wait completes immediately because the child inherited no pipe FDs.
+	time.Sleep(hookWaitDelay + 100*time.Millisecond)
+	manager.stopAndWait()
+	waitForWindowsHookProcessExit(t, grandchildHandle, "grandchild")
+	if _, err := os.Stat(completed); err == nil {
+		t.Fatal("grandchild completion marker exists after async shutdown")
+	}
+	if strings.Contains(diagnostics.String(), "on-idle hook failed") {
+		t.Fatalf("diagnostics = %q, shutdown cancellation must not be a hook failure", diagnostics.String())
+	}
+}
+
+func TestAsyncHookRetainedChildTimeoutReportsTimeout(t *testing.T) {
+	directory := t.TempDir()
+	child := filepath.Join(directory, "child.started")
+	grandchild := filepath.Join(directory, "grandchild.started")
+	completed := filepath.Join(directory, "completed")
+	gate := filepath.Join(directory, "release")
+	t.Setenv(hookProcessTreeChildEnv, child)
+	t.Setenv(hookProcessTreeGrandchildEnv, grandchild)
+	t.Setenv(hookProcessTreeCompletedEnv, completed)
+	t.Setenv(hookProcessTreeGateEnv, gate)
+	t.Setenv(hookProcessTreeSleepEnv, "5s")
+	if err := os.WriteFile(gate, []byte("release"), 0600); err != nil {
+		t.Fatalf("WriteFile(%q) error = %v", gate, err)
+	}
+	events := make(chan string, 16)
+	var diagnostics bytes.Buffer
+	reporter := newVerboseReporter(io.MultiWriter(&diagnostics, &eventChannelWriter{label: "diagnostics", events: events}), true)
+	manager := newAsyncHookManager(reporter)
+	manager.start("on-idle", windowsHookProcessTreeCommand(t, "root"), hookContext{event: "idle"}, 500*time.Millisecond)
+	waitForWindowsHookProcessMarker(t, child, nil, nil)
+	waitForWindowsHookProcessMarker(t, grandchild, nil, nil)
+	grandchildHandle := openWindowsHookProcess(t, readWindowsHookPID(t, grandchild))
+	// The gate is released before start, so the root may already be reaped when
+	// its marker is observed; only the retained grandchild needs a live handle.
+	waitForEvent(t, events, "type=hook event=idle state=timeout")
+	manager.stopAndWait()
+	waitForWindowsHookProcessExit(t, grandchildHandle, "grandchild")
+	got := diagnostics.String()
+	if !strings.Contains(got, "type=hook event=idle state=timeout") {
+		t.Fatalf("diagnostics = %q, missing timeout record", got)
+	}
+	if !strings.Contains(got, "on-idle hook failed: hook timed out") {
+		t.Fatalf("diagnostics = %q, missing timeout diagnostic", got)
+	}
+}
+
+func TestAsyncHookShutdownReportsNaturalDirectFailureOnce(t *testing.T) {
+	directory := t.TempDir()
+	child := filepath.Join(directory, "child.started")
+	grandchild := filepath.Join(directory, "grandchild.started")
+	rootExited := filepath.Join(directory, "root.exited")
+	completed := filepath.Join(directory, "completed")
+	t.Setenv(hookProcessTreeChildEnv, child)
+	t.Setenv(hookProcessTreeGrandchildEnv, grandchild)
+	t.Setenv(hookProcessTreeCompletedEnv, completed)
+	t.Setenv(hookProcessTreeRootExitedEnv, rootExited)
+	t.Setenv(hookProcessTreeSleepEnv, "3s")
+
+	var diagnostics bytes.Buffer
+	manager := newAsyncHookManager(&diagnostics)
+	manager.start("on-idle", windowsHookProcessTreeCommand(t, "root-failure"), hookContext{event: "idle"}, 0)
+	waitForWindowsHookProcessMarker(t, child, nil, nil)
+	waitForWindowsHookProcessMarker(t, grandchild, nil, nil)
+	waitForWindowsHookProcessMarker(t, rootExited, nil, nil)
+	grandchildHandle := openWindowsHookProcess(t, readWindowsHookPID(t, grandchild))
+	// The grandchild retains the hook output handles, so cleanup must recover
+	// the already-finished non-zero root result from Cmd.Wait.
+	manager.stopAndWait()
+	waitForWindowsHookProcessExit(t, grandchildHandle, "grandchild")
+	if _, err := os.Stat(completed); err == nil {
+		t.Fatal("grandchild completed after shutdown cleanup")
+	}
+
+	got := diagnostics.String()
+	if count := strings.Count(got, "on-idle hook failed:"); count != 1 {
+		t.Fatalf("direct failure diagnostics = %d, want exactly one; diagnostics = %q", count, got)
+	}
+	if !strings.Contains(got, "on-idle hook failed: exit status 7") {
+		t.Fatalf("diagnostics = %q, missing natural direct failure", got)
+	}
+}
+
+func TestAsyncHookTimeoutReportsNaturalDirectFailureSeparately(t *testing.T) {
+	directory := t.TempDir()
+	child := filepath.Join(directory, "child.started")
+	grandchild := filepath.Join(directory, "grandchild.started")
+	rootExited := filepath.Join(directory, "root.exited")
+	completed := filepath.Join(directory, "completed")
+	t.Setenv(hookProcessTreeChildEnv, child)
+	t.Setenv(hookProcessTreeGrandchildEnv, grandchild)
+	t.Setenv(hookProcessTreeCompletedEnv, completed)
+	t.Setenv(hookProcessTreeRootExitedEnv, rootExited)
+	t.Setenv(hookProcessTreeSleepEnv, "3s")
+
+	events := make(chan string, 16)
+	var diagnostics bytes.Buffer
+	reporter := newVerboseReporter(io.MultiWriter(&diagnostics, &eventChannelWriter{label: "diagnostics", events: events}), true)
+	manager := newAsyncHookManager(reporter)
+	manager.start("on-idle", windowsHookProcessTreeCommand(t, "root-failure"), hookContext{event: "idle"}, 50*time.Millisecond)
+	waitForWindowsHookProcessMarker(t, child, nil, nil)
+	waitForWindowsHookProcessMarker(t, grandchild, nil, nil)
+	waitForWindowsHookProcessMarker(t, rootExited, nil, nil)
+	grandchildHandle := openWindowsHookProcess(t, readWindowsHookPID(t, grandchild))
+	// The timeout fires while WaitDelay still retains the natural root result.
+	waitForEvent(t, events, "type=hook event=idle state=timeout")
+	manager.stopAndWait()
+	waitForWindowsHookProcessExit(t, grandchildHandle, "grandchild")
+	if _, err := os.Stat(completed); err == nil {
+		t.Fatal("grandchild completed after timeout cleanup")
+	}
+
+	got := diagnostics.String()
+	if count := strings.Count(got, "on-idle hook failed:"); count != 2 {
+		t.Fatalf("failure diagnostics = %d, want direct failure and timeout; diagnostics = %q", count, got)
+	}
+	if !strings.Contains(got, "on-idle hook failed: exit status 7") {
+		t.Fatalf("diagnostics = %q, missing natural direct failure", got)
+	}
+	if !strings.Contains(got, "on-idle hook failed: hook timed out") {
+		t.Fatalf("diagnostics = %q, missing timeout diagnostic", got)
 	}
 }
 
@@ -218,6 +404,7 @@ const (
 	hookProcessTreeChildEnv      = "PIPEWISP_TEST_HOOK_TREE_CHILD"
 	hookProcessTreeGrandchildEnv = "PIPEWISP_TEST_HOOK_TREE_GRANDCHILD"
 	hookProcessTreeCompletedEnv  = "PIPEWISP_TEST_HOOK_TREE_COMPLETED"
+	hookProcessTreeRootExitedEnv = "PIPEWISP_TEST_HOOK_TREE_ROOT_EXITED"
 	hookProcessTreeGateEnv       = "PIPEWISP_TEST_HOOK_TREE_GATE"
 	hookProcessTreeSleepEnv      = "PIPEWISP_TEST_HOOK_TREE_SLEEP"
 )
@@ -260,6 +447,23 @@ func hookProcessTreeRoot() {
 		}
 		time.Sleep(time.Millisecond)
 	}
+}
+
+func hookProcessTreeRootFailure() {
+	if err := os.WriteFile(os.Getenv(hookProcessTreeChildEnv), []byte(strconv.Itoa(os.Getpid())), 0600); err != nil {
+		os.Exit(1)
+	}
+	grandchild := exec.Command(os.Args[0])
+	grandchild.Stdout = os.Stdout
+	grandchild.Stderr = os.Stderr
+	grandchild.Env = hookProcessTreeEnvironment("grandchild", os.Getenv(hookProcessTreeGrandchildEnv), os.Getenv(hookProcessTreeCompletedEnv), os.Getenv(hookProcessTreeSleepEnv))
+	if err := grandchild.Start(); err != nil {
+		os.Exit(1)
+	}
+	if err := os.WriteFile(os.Getenv(hookProcessTreeRootExitedEnv), []byte("done"), 0600); err != nil {
+		os.Exit(1)
+	}
+	os.Exit(7)
 }
 
 func hookProcessTreeEnvironment(mode, grandchild, completed, sleep string) []string {
