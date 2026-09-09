@@ -9,6 +9,7 @@ on:
       - "LICENSE"
       - "README.md"
       - "cmd/**"
+      - "internal/**"
   push:
     tags:
       - "v*"
@@ -143,7 +144,7 @@ jobs:
             build_env+=(GOARM="$TARGET_GOARM")
           fi
           env "${build_env[@]}" \
-            go build -trimpath -ldflags="-s -w -X main.version=${VERSION}" \
+            go build -trimpath -ldflags="-s -w -X github.com/zaubermaerchen/pipewisp/internal/pipewisp.version=${VERSION}" \
               -o "$staging/$package_name/$binary" ./cmd/pipewisp
           cp LICENSE README.md "$staging/$package_name/"
           test -s "$staging/$package_name/$binary"
