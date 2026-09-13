@@ -142,6 +142,10 @@ On Unix, `dup` shares the open-file description with the borrowed descriptor, so
 pipewisp temporarily enables `O_NONBLOCK` for each event write and restores the
 original blocking mode before returning. Do not use the same descriptor
 concurrently for operations that depend on its blocking mode.
+On Windows, pipewisp temporarily enables `PIPE_NOWAIT` for each event write and
+restores the complete named-pipe mode, including the read mode, before
+returning; disk handles are written directly. Do not use the same descriptor
+concurrently for operations that depend on its pipe mode.
 
 `--idle` is a Go duration such as `250ms` or `2s`; it must be positive and must
 be used with at least one of `--verbose`, `--events-fd`, `--on-idle`,
