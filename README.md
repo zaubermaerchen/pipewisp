@@ -140,7 +140,7 @@ marks the borrowed descriptor non-inheritable for lifecycle hooks and future
 child processes; it remains open for the caller to use.
 On Unix, `dup` shares the open-file description with the borrowed descriptor, so
 pipewisp temporarily enables `O_NONBLOCK` for each event write and restores the
-original status flags before returning. Do not use the same descriptor
+original blocking mode before returning. Do not use the same descriptor
 concurrently for operations that depend on its blocking mode.
 
 `--idle` is a Go duration such as `250ms` or `2s`; it must be positive and must

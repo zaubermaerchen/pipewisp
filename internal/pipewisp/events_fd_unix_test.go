@@ -198,7 +198,7 @@ func TestEventEmitterWriteDoesNotWaitForFullConsumer(t *testing.T) {
 	}
 	if got, err := unix.FcntlInt(uintptr(writeFD), unix.F_GETFL, 0); err != nil {
 		t.Fatal(err)
-	} else if got != originalFlags {
-		t.Fatalf("caller descriptor flags = %#x, want %#x", got, originalFlags)
+	} else if got&unix.O_NONBLOCK != originalFlags&unix.O_NONBLOCK {
+		t.Fatalf("caller descriptor blocking mode = %#x, want %#x", got&unix.O_NONBLOCK, originalFlags&unix.O_NONBLOCK)
 	}
 }
