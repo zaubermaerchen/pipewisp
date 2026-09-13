@@ -72,6 +72,25 @@ func TestRunEventsFDEmitsLifecycleEventsWithoutHooks(t *testing.T) {
 	}
 }
 
+func TestRunEventsFDInvalidDescriptorContinuesPipeline(t *testing.T) {
+	input := []byte{0x00, 0x01, 0x7f, 0x80, 0xfe, 0xff, '\n'}
+	source := &writerToReader{data: append([]byte(nil), input...)}
+	var output, diagnostics bytes.Buffer
+
+	if status := Run([]string{"--events-fd", "99"}, source, &output, &diagnostics); status != 0 {
+		t.Fatalf("Run() status = %d, want 0; diagnostics = %q", status, diagnostics.String())
+	}
+	if !bytes.Equal(output.Bytes(), input) {
+		t.Fatalf("stdout = %x, want %x", output.Bytes(), input)
+	}
+	if got := strings.Count(diagnostics.String(), "events disabled:"); got != 1 {
+		t.Fatalf("diagnostics = %q, want one events warning", diagnostics.String())
+	}
+	if !source.writeToCalled {
+		t.Fatal("invalid events fd disabled source WriterTo fast path")
+	}
+}
+
 func TestRunEventsFDEnablesIdleLifecycleEventsWithoutHooks(t *testing.T) {
 	readEvents, writeEvents, err := os.Pipe()
 	if err != nil {

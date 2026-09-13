@@ -75,7 +75,7 @@ func runWithOptions(opts options, in io.Reader, out io.Writer, diagnostics io.Wr
 	} else {
 		copyDone := make(chan error, 1)
 		input := in
-		if opts.onFirstDataSet || opts.verbose || opts.eventsFDSet {
+		if opts.onFirstDataSet || opts.verbose || state.events != nil {
 			firstData = &firstDataReader{
 				reader:   in,
 				finished: make(chan struct{}),
@@ -87,13 +87,13 @@ func runWithOptions(opts options, in io.Reader, out io.Writer, diagnostics io.Wr
 					return runHookWithContextAndTracker("on-first-data", opts.onFirstData, context, diagnostics, opts.hookTimeout, tracker, opts.ignoreHookErrors)
 				},
 			}
-			if opts.verbose || opts.eventsFDSet {
+			if opts.verbose || state.events != nil {
 				firstData.event = func() hookContext {
 					context := state.snapshot("first-data", "")
 					if opts.verbose {
 						reporter.event(context)
 					}
-					if opts.eventsFDSet {
+					if state.events != nil {
 						state.emit(context.event)
 					}
 					return context
