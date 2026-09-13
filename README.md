@@ -126,9 +126,18 @@ Exit status sections remain authoritative for exact behavior and precedence.
 ## Usage
 
 ```text
+pipewisp --describe
 pipewisp --version
 pipewisp [--name NAME] [--events-fd FD] [--verbose] [--on-ready COMMAND] [--on-first-data COMMAND] [--on-shutdown COMMAND] [--idle DURATION] [--on-idle COMMAND] [--on-idle.async COMMAND] [--on-resume COMMAND] [--on-resume.async COMMAND] [--hook-timeout DURATION] [--ignore-hook-errors]
 ```
+
+`--describe` emits one JSON object describing the current CLI, stream
+semantics, lifecycle state machine, and command-execution side effects. It is a
+machine-readable interface for programs and agents, must be used by itself,
+and exits without reading stdin, forwarding data, running hooks, or opening an
+event descriptor. Its top-level `schema_version` is `1`; consumers should
+tolerate additional fields in later compatible descriptions. The description
+uses `version` from the same build metadata as `--version`.
 
 Each hook option is optional and may be specified at most once. `--events-fd`
 selects an existing file descriptor for JSONL lifecycle events; it accepts
@@ -192,6 +201,7 @@ Pull-request release artifacts use `snapshot`, so their output may be
 `pipewisp snapshot`.
 
 ```sh
+pipewisp --describe
 pipewisp --version
 producer | pipewisp
 producer | pipewisp --on-ready 'printf "started\\n"' --on-shutdown 'printf "stopped\\n"'

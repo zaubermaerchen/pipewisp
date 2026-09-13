@@ -20,6 +20,13 @@ func Run(args []string, in io.Reader, out, diagnostics io.Writer) int {
 		printUsage(out)
 		return 0
 	}
+	if opts.showDescription {
+		if err := printDescription(out); err != nil {
+			reportDiagnostic(diagnostics, err)
+			return 1
+		}
+		return 0
+	}
 	if opts.showVersion {
 		printVersion(out)
 		return 0
