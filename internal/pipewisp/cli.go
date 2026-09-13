@@ -5,6 +5,7 @@ package pipewisp
 import (
 	"fmt"
 	"io"
+	"strconv"
 	"strings"
 	"time"
 	"unicode"
@@ -14,6 +15,8 @@ import (
 type options struct {
 	name             string
 	nameSet          bool
+	eventsFD         int
+	eventsFDSet      bool
 	showVersion      bool
 	verbose          bool
 	onReady          string
@@ -72,6 +75,25 @@ func parseArgs(args []string) (options, bool, error) {
 				return options{}, false, err
 			}
 			opts.name, opts.nameSet = value, true
+		case arg == "--events-fd":
+			if opts.eventsFDSet {
+				return options{}, false, fmt.Errorf("--events-fd specified more than once")
+			}
+			value, next, err := parseSeparateEventsFD(args, i)
+			if err != nil {
+				return options{}, false, err
+			}
+			opts.eventsFD, opts.eventsFDSet = value, true
+			i = next
+		case strings.HasPrefix(arg, "--events-fd="):
+			if opts.eventsFDSet {
+				return options{}, false, fmt.Errorf("--events-fd specified more than once")
+			}
+			value, err := parseEventsFD(arg[len("--events-fd="):])
+			if err != nil {
+				return options{}, false, err
+			}
+			opts.eventsFD, opts.eventsFDSet = value, true
 		case arg == "-h" || arg == "--help":
 			if len(args) != 1 {
 				return options{}, false, fmt.Errorf("%s cannot be combined with other arguments", arg)
@@ -302,8 +324,8 @@ func parseArgs(args []string) (options, bool, error) {
 	if opts.onResumeAsyncSet && !opts.idleSet {
 		return options{}, false, fmt.Errorf("--on-resume.async requires --idle")
 	}
-	if opts.idleSet && !opts.verbose && !opts.onIdleSet && !opts.onIdleAsyncSet && !opts.onResumeSet && !opts.onResumeAsyncSet {
-		return options{}, false, fmt.Errorf("--idle requires --verbose, --on-idle, --on-idle.async, --on-resume, or --on-resume.async")
+	if opts.idleSet && !opts.verbose && !opts.eventsFDSet && !opts.onIdleSet && !opts.onIdleAsyncSet && !opts.onResumeSet && !opts.onResumeAsyncSet {
+		return options{}, false, fmt.Errorf("--idle requires --verbose, --events-fd, --on-idle, --on-idle.async, --on-resume, or --on-resume.async")
 	}
 
 	return opts, false, nil
@@ -331,6 +353,29 @@ func parseSeparateName(args []string, optionIndex int) (string, int, error) {
 		return "", optionIndex, err
 	}
 	return value, valueIndex, nil
+}
+
+func parseSeparateEventsFD(args []string, optionIndex int) (int, int, error) {
+	valueIndex := optionIndex + 1
+	if valueIndex >= len(args) || strings.HasPrefix(args[valueIndex], "--") {
+		return 0, optionIndex, fmt.Errorf("missing value for --events-fd")
+	}
+	value, err := parseEventsFD(args[valueIndex])
+	if err != nil {
+		return 0, optionIndex, err
+	}
+	return value, valueIndex, nil
+}
+
+func parseEventsFD(value string) (int, error) {
+	fd, err := strconv.Atoi(value)
+	if err != nil {
+		return 0, fmt.Errorf("invalid file descriptor for --events-fd: %w", err)
+	}
+	if fd < 3 {
+		return 0, fmt.Errorf("--events-fd must be at least 3")
+	}
+	return fd, nil
 }
 
 func parseSeparateDuration(args []string, optionIndex int, option string) (time.Duration, int, error) {
@@ -402,5 +447,5 @@ func isBidiControl(r rune) bool {
 }
 
 func printUsage(out io.Writer) {
-	_, _ = out.Write([]byte("Usage: pipewisp [--name NAME] [--verbose] [--on-ready COMMAND] [--on-first-data COMMAND] [--on-shutdown COMMAND] [--idle DURATION] [--on-idle COMMAND] [--on-idle.async COMMAND] [--on-resume COMMAND] [--on-resume.async COMMAND] [--hook-timeout DURATION] [--ignore-hook-errors]\n       pipewisp --version\n"))
+	_, _ = out.Write([]byte("Usage: pipewisp [--name NAME] [--events-fd FD] [--verbose] [--on-ready COMMAND] [--on-first-data COMMAND] [--on-shutdown COMMAND] [--idle DURATION] [--on-idle COMMAND] [--on-idle.async COMMAND] [--on-resume COMMAND] [--on-resume.async COMMAND] [--hook-timeout DURATION] [--ignore-hook-errors]\n       pipewisp --version\n"))
 }

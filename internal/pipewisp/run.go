@@ -39,6 +39,12 @@ func runWithOptions(opts options, in io.Reader, out io.Writer, diagnostics io.Wr
 		diagnostics = reporter
 	}
 	asyncHooks := newAsyncHookManager(diagnostics)
+	if opts.eventsFDSet {
+		state.events = newEventEmitter(opts.eventsFD, asyncHooks.diagnostics)
+		if state.events != nil {
+			defer state.events.close()
+		}
+	}
 
 	// Subscribe before ready so a signal during readiness is retained for final status selection.
 	tracker, stopSignals := subscribePassthroughSignals()
@@ -47,6 +53,7 @@ func runWithOptions(opts options, in io.Reader, out io.Writer, diagnostics io.Wr
 	var done completion
 	readyContext := state.snapshot("ready", "")
 	reporter.event(readyContext)
+	state.emit(readyContext.event)
 	if opts.onReadySet {
 		if err := runHookWithContextAndTracker("on-ready", opts.onReady, readyContext, diagnostics, opts.hookTimeout, tracker, opts.ignoreHookErrors); err != nil {
 			if sig := tracker.poll(); sig != nil {
@@ -68,7 +75,7 @@ func runWithOptions(opts options, in io.Reader, out io.Writer, diagnostics io.Wr
 	} else {
 		copyDone := make(chan error, 1)
 		input := in
-		if opts.onFirstDataSet || opts.verbose {
+		if opts.onFirstDataSet || opts.verbose || state.events != nil {
 			firstData = &firstDataReader{
 				reader:   in,
 				finished: make(chan struct{}),
@@ -80,10 +87,15 @@ func runWithOptions(opts options, in io.Reader, out io.Writer, diagnostics io.Wr
 					return runHookWithContextAndTracker("on-first-data", opts.onFirstData, context, diagnostics, opts.hookTimeout, tracker, opts.ignoreHookErrors)
 				},
 			}
-			if opts.verbose {
+			if opts.verbose || state.events != nil {
 				firstData.event = func() hookContext {
 					context := state.snapshot("first-data", "")
-					reporter.event(context)
+					if opts.verbose {
+						reporter.event(context)
+					}
+					if state.events != nil {
+						state.emit(context.event)
+					}
 					return context
 				}
 			}
@@ -118,6 +130,7 @@ func runWithOptions(opts options, in io.Reader, out io.Writer, diagnostics io.Wr
 	if opts.verbose {
 		reporter.event(shutdownContext)
 	}
+	state.emit(shutdownContext.event)
 	if firstData != nil {
 		done.firstDataHookFailed = firstData.hookFailed()
 	}

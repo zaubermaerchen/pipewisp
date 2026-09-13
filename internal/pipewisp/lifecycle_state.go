@@ -11,6 +11,7 @@ import (
 type lifecycleState struct {
 	started time.Time
 	bytes   atomic.Int64
+	events  *eventEmitter
 }
 
 func newLifecycleState() *lifecycleState {
@@ -29,6 +30,12 @@ func (state *lifecycleState) snapshot(event, reason string) hookContext {
 		reason:               reason,
 		bytes:                state.bytes.Load(),
 		durationMilliseconds: durationMilliseconds,
+	}
+}
+
+func (state *lifecycleState) emit(event string) {
+	if state.events != nil {
+		state.events.emit(event)
 	}
 }
 
