@@ -21,6 +21,13 @@ func setEventDescriptorNonInheritable(fd int) error {
 }
 
 func duplicateEventFile(fd int) (*os.File, error) {
+	// dup shares the open-file description with the caller. Save its status
+	// flags before wrapping the duplicate because os.NewFile may make a pipe
+	// nonblocking while registering it with the runtime poller.
+	originalFlags, err := unix.FcntlInt(uintptr(fd), unix.F_GETFL, 0)
+	if err != nil {
+		return nil, err
+	}
 	ownedFD, err := unix.Dup(fd)
 	if err != nil {
 		return nil, err
@@ -40,6 +47,11 @@ func duplicateEventFile(fd int) (*os.File, error) {
 	file := os.NewFile(uintptr(ownedFD), "pipewisp events")
 	if file == nil {
 		return nil, fmt.Errorf("invalid duplicated file descriptor %d", ownedFD)
+	}
+	if _, err := unix.FcntlInt(uintptr(ownedFD), unix.F_SETFL, originalFlags); err != nil {
+		closeOwnedFD = false
+		_ = file.Close()
+		return nil, fmt.Errorf("restore event descriptor flags: %w", err)
 	}
 	closeOwnedFD = false
 	return file, nil
