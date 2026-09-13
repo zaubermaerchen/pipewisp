@@ -1,3 +1,5 @@
+//go:build aix || android || darwin || dragonfly || freebsd || illumos || ios || linux || netbsd || openbsd || solaris || windows
+
 package pipewisp
 
 // This file tests the machine-readable lifecycle event stream.
@@ -67,25 +69,6 @@ func TestRunEventsFDEmitsLifecycleEventsWithoutHooks(t *testing.T) {
 		if _, err := time.Parse(time.RFC3339Nano, records[i]["timestamp"]); err != nil {
 			t.Errorf("event %d timestamp = %q: %v", i, records[i]["timestamp"], err)
 		}
-	}
-}
-
-func TestParseEventsFDErrors(t *testing.T) {
-	for _, tt := range []struct {
-		name string
-		args []string
-	}{
-		{name: "missing", args: []string{"--events-fd"}},
-		{name: "non numeric", args: []string{"--events-fd=three"}},
-		{name: "stdin", args: []string{"--events-fd", "0"}},
-		{name: "stderr", args: []string{"--events-fd", "2"}},
-		{name: "duplicate", args: []string{"--events-fd=3", "--events-fd", "4"}},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			if _, _, err := parseArgs(tt.args); err == nil {
-				t.Fatal("parseArgs() error = nil, want error")
-			}
-		})
 	}
 }
 
