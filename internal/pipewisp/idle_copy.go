@@ -183,6 +183,14 @@ func runIdleCopy(opts options, in io.Reader, out io.Writer, diagnostics io.Write
 
 func runIdleCopyWithState(opts options, in io.Reader, out io.Writer, diagnostics io.Writer, tracker *signalTracker, state *lifecycleState) completion {
 	asyncHooks := newAsyncHookManager(diagnostics)
+	ownedEvents := false
+	if state.events == nil && opts.eventsFDSet {
+		state.events = newEventEmitter(opts.eventsFD, asyncHooks.diagnostics)
+		ownedEvents = state.events != nil
+	}
+	if ownedEvents {
+		defer state.events.close()
+	}
 	done := runIdleCopyWithAsyncManager(opts, in, out, diagnostics, tracker, state, asyncHooks)
 	asyncHooks.stopAndWait()
 	return done
@@ -287,10 +295,16 @@ func (runner *idleCopyRunner) handleRead(result idleReadResult) bool {
 		firstDataPending := runner.opts.onFirstDataSet && !runner.firstDataSeen
 		if !runner.firstDataSeen {
 			runner.firstDataSeen = true
-			if runner.opts.verbose {
+			if runner.opts.verbose || runner.state.events != nil {
 				runner.eventContext = runner.state.snapshot("first-data", "")
-				if reporter := verboseForWriter(runner.diagnostics); reporter != nil {
-					reporter.event(runner.eventContext)
+				if runner.opts.verbose {
+					reporter := verboseForWriter(runner.diagnostics)
+					if reporter != nil {
+						reporter.event(runner.eventContext)
+					}
+				}
+				if runner.state.events != nil {
+					runner.state.emit(runner.eventContext.event)
 				}
 			}
 		}
@@ -304,10 +318,16 @@ func (runner *idleCopyRunner) handleRead(result idleReadResult) bool {
 		}
 		if runner.idle && !firstDataPending {
 			var resumeContext hookContext
-			if runner.opts.verbose {
+			if runner.opts.verbose || runner.state.events != nil {
 				resumeContext = runner.state.snapshot("resume", "")
-				if reporter := verboseForWriter(runner.diagnostics); reporter != nil {
-					reporter.event(resumeContext)
+				if runner.opts.verbose {
+					reporter := verboseForWriter(runner.diagnostics)
+					if reporter != nil {
+						reporter.event(resumeContext)
+					}
+				}
+				if runner.state.events != nil {
+					runner.state.emit(resumeContext.event)
 				}
 			}
 			// A resume hook is part of the transition into active mode. A
@@ -408,10 +428,16 @@ func (runner *idleCopyRunner) handleIdle() bool {
 	runner.active = false
 	runner.idle = true
 	var idleContext hookContext
-	if runner.opts.verbose {
+	if runner.opts.verbose || runner.state.events != nil {
 		idleContext = runner.state.snapshot("idle", "")
-		if reporter := verboseForWriter(runner.diagnostics); reporter != nil {
-			reporter.event(idleContext)
+		if runner.opts.verbose {
+			reporter := verboseForWriter(runner.diagnostics)
+			if reporter != nil {
+				reporter.event(idleContext)
+			}
+		}
+		if runner.state.events != nil {
+			runner.state.emit(idleContext.event)
 		}
 	}
 	if runner.opts.onIdleAsyncSet {

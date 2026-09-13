@@ -16,7 +16,8 @@
 
 Think `pv`, but instead of displaying throughput, it runs hooks when
 a stream becomes ready, receives its first data, or shuts down—and,
-with `--idle`, when it goes idle or resumes.
+with `--idle`, when it goes idle or resumes. An optional event stream reports
+those lifecycle transitions as JSONL on a dedicated file descriptor.
 
 ## Concept
 
@@ -126,14 +127,27 @@ Exit status sections remain authoritative for exact behavior and precedence.
 
 ```text
 pipewisp --version
-pipewisp [--name NAME] [--verbose] [--on-ready COMMAND] [--on-first-data COMMAND] [--on-shutdown COMMAND] [--idle DURATION] [--on-idle COMMAND] [--on-idle.async COMMAND] [--on-resume COMMAND] [--on-resume.async COMMAND] [--hook-timeout DURATION] [--ignore-hook-errors]
+pipewisp [--name NAME] [--events-fd FD] [--verbose] [--on-ready COMMAND] [--on-first-data COMMAND] [--on-shutdown COMMAND] [--idle DURATION] [--on-idle COMMAND] [--on-idle.async COMMAND] [--on-resume COMMAND] [--on-resume.async COMMAND] [--hook-timeout DURATION] [--ignore-hook-errors]
 ```
 
-Each hook option is optional and may be specified at most once. `--idle` is a
-Go duration such as `250ms` or `2s`; it must be positive and must be used with
-at least one of `--verbose`, `--on-idle`, `--on-idle.async`, `--on-resume`, or
-`--on-resume.async`. The separated and equals forms are supported for options
-that take values. `--hook-timeout` is a positive Go duration that bounds each
+Each hook option is optional and may be specified at most once. `--events-fd`
+selects an existing file descriptor for JSONL lifecycle events; it accepts
+descriptors `3` and higher and may be written as either `--events-fd FD` or
+`--events-fd=FD`. Pipewisp borrows this descriptor and does not close it. If
+initialization or an event write fails, pipewisp writes one warning to stderr,
+disables subsequent event output, and continues the main pipeline. Pipewisp
+marks the borrowed descriptor non-inheritable for lifecycle hooks and future
+child processes; it remains open for the caller to use.
+On Unix, `dup` shares the open-file description with the borrowed descriptor, so
+pipewisp temporarily enables `O_NONBLOCK` for each event write and restores the
+original status flags before returning. Do not use the same descriptor
+concurrently for operations that depend on its blocking mode.
+
+`--idle` is a Go duration such as `250ms` or `2s`; it must be positive and must
+be used with at least one of `--verbose`, `--events-fd`, `--on-idle`,
+`--on-idle.async`, `--on-resume`, or `--on-resume.async`. The separated and
+equals forms are supported for options that take values. `--hook-timeout` is a
+positive Go duration that bounds each
 lifecycle hook invocation (`--on-ready`, `--on-first-data`, `--on-idle`,
 `--on-idle.async`, `--on-resume`, `--on-resume.async`, and `--on-shutdown`). A new
 timeout window starts for every invocation; when the option is omitted, hooks
@@ -184,6 +198,7 @@ producer | pipewisp --idle 2s --on-idle 'printf "idle\\n"' --on-resume 'printf "
 producer | pipewisp --idle 2s --on-idle.async 'notify-idle' --on-resume.async 'notify-active'
 producer | pipewisp --idle=250ms --on-idle='notify-idle'
 producer | pipewisp --verbose --idle 2s
+producer | pipewisp --events-fd 3 --idle 2s 3>events.jsonl
 producer | pipewisp --name relay --verbose --idle 2s
 producer | pipewisp --hook-timeout=5s --on-ready 'prepare' --on-shutdown 'cleanup'
 producer | pipewisp --ignore-hook-errors --on-ready 'notify-start' --on-shutdown 'notify-stop'
@@ -194,14 +209,19 @@ pipewisp --help
 
 Duplicate options, unknown options, missing or empty commands or durations,
 invalid names, non-positive or invalid durations, invalid idle configurations,
-and positional arguments are errors. `--idle` without `--verbose`, `--on-idle`,
-`--on-idle.async`, `--on-resume`, or `--on-resume.async` fails. CLI parse and validation
+and positional arguments are errors. `--idle` without `--verbose`, `--events-fd`,
+`--on-idle`, `--on-idle.async`, `--on-resume`, or `--on-resume.async` fails. CLI parse and validation
 diagnostics retain the ordinary `pipewisp:` prefix even when a valid `--name`
 appears elsewhere in the arguments. `--on-first-data` is independent of
 `--on-ready`, `--on-shutdown`, and idle mode; all lifecycle options may be used
 together. The former `--on` and `--off` forms are not aliases and are rejected
 as unknown options.
 `--help` prints usage and exits successfully.
+
+When `--events-fd` is set, one JSON object is written for each applicable
+`ready`, `first-data`, `idle`, `resume`, and `shutdown` transition. Each object
+contains exactly `event` and an RFC3339Nano `timestamp`; records are written
+synchronously in lifecycle order, whether or not a corresponding hook is set.
 
 Synchronous commands are executed in this order:
 

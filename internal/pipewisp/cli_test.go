@@ -45,6 +45,16 @@ func TestParseArgs(t *testing.T) {
 			want: options{hookTimeout: 2 * time.Second, hookTimeoutSet: true},
 		},
 		{
+			name: "events fd separated",
+			args: []string{"--events-fd", "7"},
+			want: options{eventsFD: 7, eventsFDSet: true},
+		},
+		{
+			name: "events fd equals",
+			args: []string{"--events-fd=8"},
+			want: options{eventsFD: 8, eventsFDSet: true},
+		},
+		{
 			name: "all lifecycle options",
 			args: []string{"--on-ready", "prepare", "--on-first-data", "observe", "--on-shutdown", "cleanup", "--idle", "25ms", "--on-idle", "idle", "--on-resume", "resume"},
 			want: options{
