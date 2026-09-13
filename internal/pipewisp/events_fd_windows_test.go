@@ -168,6 +168,7 @@ func fillWindowsEventPipe(t *testing.T, handle windows.Handle, originalMode uint
 	buffer := make([]byte, 4096)
 	var total uint32
 	var writeErr error
+	var noProgress bool
 	for total < 16<<20 {
 		var written uint32
 		writeErr = windows.WriteFile(handle, buffer, &written, nil)
@@ -176,10 +177,13 @@ func fillWindowsEventPipe(t *testing.T, handle windows.Handle, originalMode uint
 			break
 		}
 		if written == 0 {
-			t.Fatal("WriteFile made no progress while filling event pipe")
+			// PIPE_NOWAIT reports a full anonymous pipe as a successful write
+			// with zero bytes written on some Windows versions.
+			noProgress = true
+			break
 		}
 	}
-	if writeErr == nil {
+	if writeErr == nil && !noProgress {
 		t.Fatalf("filled %d bytes without making event pipe unavailable", total)
 	}
 }
