@@ -77,7 +77,8 @@ func TestRunEventsFDInvalidDescriptorContinuesPipeline(t *testing.T) {
 	source := &writerToReader{data: append([]byte(nil), input...)}
 	var output, diagnostics bytes.Buffer
 
-	if status := Run([]string{"--events-fd", "99"}, source, &output, &diagnostics); status != 0 {
+	invalidFD := strconv.Itoa(int(^uint(0) >> 1))
+	if status := Run([]string{"--events-fd", invalidFD}, source, &output, &diagnostics); status != 0 {
 		t.Fatalf("Run() status = %d, want 0; diagnostics = %q", status, diagnostics.String())
 	}
 	if !bytes.Equal(output.Bytes(), input) {
