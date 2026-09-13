@@ -129,6 +129,7 @@ func TestPublicDescriptionMetadataIsComplete(t *testing.T) {
 		StreamSemantics map[string]publicStreamInterface `json:"stream_semantics"`
 		StateMachine    struct {
 			InitialState string             `json:"initial_state"`
+			InitialEvent string             `json:"initial_event"`
 			States       []string           `json:"states"`
 			Events       []string           `json:"events"`
 			Transitions  []publicTransition `json:"transitions"`
@@ -263,8 +264,8 @@ func TestPublicDescriptionMetadataIsComplete(t *testing.T) {
 		{From: "idle", Event: "resume", To: "active"},
 		{From: "idle", Event: "shutdown", To: "shutdown"},
 	}
-	if document.StateMachine.InitialState != "ready" || !equalStrings(document.StateMachine.States, []string{"ready", "active", "idle", "shutdown"}) {
-		t.Fatalf("state machine initial/states = %q/%#v, want ready/[ready active idle shutdown]", document.StateMachine.InitialState, document.StateMachine.States)
+	if document.StateMachine.InitialState != "ready" || document.StateMachine.InitialEvent != "ready" || !equalStrings(document.StateMachine.States, []string{"ready", "active", "idle", "shutdown"}) {
+		t.Fatalf("state machine initial state/event/states = %q/%q/%#v, want ready/ready/[ready active idle shutdown]", document.StateMachine.InitialState, document.StateMachine.InitialEvent, document.StateMachine.States)
 	}
 	if !equalStrings(document.StateMachine.Events, []string{"ready", "first-data", "idle", "resume", "shutdown"}) {
 		t.Fatalf("state machine events = %#v, want [ready first-data idle resume shutdown]", document.StateMachine.Events)

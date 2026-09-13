@@ -48,6 +48,7 @@ type streamInterfaceDescription struct {
 
 type stateDescription struct {
 	InitialState string            `json:"initial_state"`
+	InitialEvent string            `json:"initial_event"`
 	States       []string          `json:"states"`
 	Events       []string          `json:"events"`
 	Transitions  []stateTransition `json:"transitions"`
@@ -156,6 +157,7 @@ func newDescription() description {
 		},
 		StateMachine: stateDescription{
 			InitialState: "ready",
+			InitialEvent: "ready",
 			States:       []string{"ready", "active", "idle", "shutdown"},
 			Events:       []string{"ready", "first-data", "idle", "resume", "shutdown"},
 			Transitions: []stateTransition{
