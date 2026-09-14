@@ -16,6 +16,16 @@ type lifecycleEventRecord struct {
 	Timestamp string `json:"timestamp"`
 }
 
+type sideEffectEventRecord struct {
+	Event     string `json:"event"`
+	Type      string `json:"type"`
+	Trigger   string `json:"trigger"`
+	Command   string `json:"command"`
+	Executed  bool   `json:"executed"`
+	Timestamp string `json:"timestamp"`
+	Reason    string `json:"reason,omitempty"`
+}
+
 type eventEmitter struct {
 	file        *os.File
 	diagnostics io.Writer
@@ -42,6 +52,25 @@ func newEventEmitter(fd int, diagnostics io.Writer) *eventEmitter {
 }
 
 func (emitter *eventEmitter) emit(event string) {
+	emitter.emitRecord(lifecycleEventRecord{
+		Event:     event,
+		Timestamp: time.Now().UTC().Format(time.RFC3339Nano),
+	})
+}
+
+func (emitter *eventEmitter) emitSideEffect(trigger, command string, executed bool, reason string) {
+	emitter.emitRecord(sideEffectEventRecord{
+		Event:     "side-effect",
+		Type:      "execute-command",
+		Trigger:   trigger,
+		Command:   command,
+		Executed:  executed,
+		Timestamp: time.Now().UTC().Format(time.RFC3339Nano),
+		Reason:    reason,
+	})
+}
+
+func (emitter *eventEmitter) emitRecord(record any) {
 	if emitter == nil {
 		return
 	}
@@ -52,10 +81,7 @@ func (emitter *eventEmitter) emit(event string) {
 		return
 	}
 
-	line, err := json.Marshal(lifecycleEventRecord{
-		Event:     event,
-		Timestamp: time.Now().UTC().Format(time.RFC3339Nano),
-	})
+	line, err := json.Marshal(record)
 	if err == nil {
 		line = append(line, '\n')
 		var n int

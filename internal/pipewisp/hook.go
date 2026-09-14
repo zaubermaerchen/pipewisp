@@ -44,12 +44,31 @@ func runHookWithContext(name, command string, context hookContext, diagnostics i
 }
 
 func runHookWithContextAndTracker(name, command string, context hookContext, diagnostics io.Writer, timeout time.Duration, tracker *signalTracker, ignoreErrors bool) error {
+	return runHookWithContextAndTrackerAndSideEffect(name, command, context, diagnostics, timeout, tracker, ignoreErrors, nil, false)
+}
+
+func runHookWithContextAndTrackerAndSideEffect(name, command string, context hookContext, diagnostics io.Writer, timeout time.Duration, tracker *signalTracker, ignoreErrors bool, events *eventEmitter, dryRun bool) error {
 	reporter := verboseForWriter(diagnostics)
+	if dryRun {
+		if events != nil {
+			events.emitSideEffect(context.event, command, false, "dry-run")
+		}
+		reportDryRun(diagnostics, name, command)
+		return nil
+	}
+
 	var started time.Time
 	if reporter != nil {
 		reporter.hookStart(context.event)
 	}
-	err := executeHookWithControl(command, context, diagnostics, timeout, tracker, func() { started = time.Now() })
+	var err error
+	if events == nil {
+		err = executeHookWithControl(command, context, diagnostics, timeout, tracker, func() { started = time.Now() })
+	} else {
+		err = executeHookWithControlAndSideEffect(command, context, diagnostics, timeout, tracker, func() { started = time.Now() }, func(executed bool, reason string) {
+			events.emitSideEffect(context.event, command, executed, reason)
+		})
+	}
 	if reporter != nil {
 		reporter.hookEnd(context.event, started, err)
 	}
@@ -62,6 +81,15 @@ func runHookWithContextAndTracker(name, command string, context hookContext, dia
 		return err
 	}
 	return nil
+}
+
+func reportDryRun(diagnostics io.Writer, name, command string) {
+	command = strconv.Quote(command)
+	if reporter := verboseForWriter(diagnostics); reporter != nil {
+		reporter.writeDiagnostic("[DRY RUN] %s: %s", name, command)
+		return
+	}
+	_, _ = fmt.Fprintf(diagnostics, "pipewisp: [DRY RUN] %s: %s\n", name, command)
 }
 
 func executeHook(command string, context hookContext, diagnostics io.Writer) error {
@@ -120,6 +148,10 @@ type hookExecution struct {
 }
 
 func startHookExecution(command string, context hookContext, diagnostics io.Writer, beforeStart func()) (*hookExecution, error) {
+	return startHookExecutionWithCallbacks(command, context, diagnostics, beforeStart, nil)
+}
+
+func startHookExecutionWithCallbacks(command string, context hookContext, diagnostics io.Writer, beforeStart, onStarted func()) (*hookExecution, error) {
 	hook := newShellCommand(command)
 	// Hooks must not consume bytes that belong to the passthrough stream.
 	hook.Stdin = nil
@@ -141,6 +173,9 @@ func startHookExecution(command string, context hookContext, diagnostics io.Writ
 	if err := boundary.start(hook); err != nil {
 		boundary.close()
 		return nil, err
+	}
+	if onStarted != nil {
+		onStarted()
 	}
 	waitDone := make(chan error, 1)
 	go func() {
@@ -187,6 +222,10 @@ func (execution *hookExecution) stopAndWait(waitErr error, waitReceived bool) (e
 }
 
 func executeHookWithControl(command string, context hookContext, diagnostics io.Writer, timeout time.Duration, tracker *signalTracker, beforeStart func()) error {
+	return executeHookWithControlAndSideEffect(command, context, diagnostics, timeout, tracker, beforeStart, nil)
+}
+
+func executeHookWithControlAndSideEffect(command string, context hookContext, diagnostics io.Writer, timeout time.Duration, tracker *signalTracker, beforeStart func(), sideEffect func(executed bool, reason string)) error {
 	if tracker != nil {
 		// A signal accepted before this invocation belongs to the surrounding
 		// lifecycle outcome, not to a hook that has not started yet. Drain it
@@ -200,27 +239,54 @@ func executeHookWithControl(command string, context hookContext, diagnostics io.
 		signalGeneration, signalDone = tracker.beginHookObservation()
 		signalC = tracker.signals
 	}
-	execution, err := startHookExecution(command, context, diagnostics, beforeStart)
+	var timeoutC <-chan time.Time
+	var timer *time.Timer
+	var onStarted func()
+	if timeout > 0 {
+		onStarted = func() {
+			timer = time.NewTimer(timeout)
+			timeoutC = timer.C
+		}
+	}
+	execution, err := startHookExecutionWithCallbacks(command, context, diagnostics, beforeStart, onStarted)
 	if err != nil {
+		if sideEffect != nil {
+			sideEffect(false, "start-failed")
+		}
 		return &hookStartError{err: err}
 	}
 	defer execution.close()
 	hook := execution.hook
 	boundary := execution.boundary
 	waitDone := execution.waitDone
+	var sideEffectDone <-chan struct{}
+	if sideEffect != nil {
+		done := make(chan struct{})
+		sideEffectDone = done
+		// Event writes do not wait for a consumer, but reporting their failure
+		// can block on diagnostics. Keep timeout and signal control live while
+		// that lifecycle side effect finishes, then wait before returning so the
+		// synchronous invocation does not leave a callback goroutine behind.
+		go func() {
+			defer close(done)
+			sideEffect(true, "")
+		}()
+	}
+	complete := func(result error) error {
+		if sideEffectDone != nil {
+			<-sideEffectDone
+		}
+		return result
+	}
 
-	var timeoutC <-chan time.Time
-	var timer *time.Timer
-	if timeout > 0 {
-		timer = time.NewTimer(timeout)
-		timeoutC = timer.C
+	if timer != nil {
 		defer timer.Stop()
 	}
 
 	for {
 		select {
 		case err := <-waitDone:
-			return wrapHookProcessError(normalizeHookWaitError(err), hook.ProcessState)
+			return complete(wrapHookProcessError(normalizeHookWaitError(err), hook.ProcessState))
 		case <-timeoutC:
 			if tracker != nil {
 				// A signal and the timer may become ready together. Signal status
@@ -229,18 +295,18 @@ func executeHookWithControl(command string, context hookContext, diagnostics io.
 				if tracker.generationChanged(signalGeneration) {
 					select {
 					case waitErr := <-waitDone:
-						return wrapHookProcessError(normalizeHookWaitError(waitErr), hook.ProcessState)
+						return complete(wrapHookProcessError(normalizeHookWaitError(waitErr), hook.ProcessState))
 					default:
 					}
-					return stopHookAndWait(boundary, hook, waitDone, 0, tracker.firstSignal())
+					return complete(stopHookAndWait(boundary, hook, waitDone, 0, tracker.firstSignal()))
 				}
 			}
 			select {
 			case waitErr := <-waitDone:
-				return wrapHookProcessError(normalizeHookWaitError(waitErr), hook.ProcessState)
+				return complete(wrapHookProcessError(normalizeHookWaitError(waitErr), hook.ProcessState))
 			default:
 			}
-			return stopHookAndWait(boundary, hook, waitDone, timeout, nil)
+			return complete(stopHookAndWait(boundary, hook, waitDone, timeout, nil))
 		case sig := <-signalC:
 			tracker.remember(sig)
 			if sig == nil {
@@ -248,20 +314,20 @@ func executeHookWithControl(command string, context hookContext, diagnostics io.
 			}
 			select {
 			case waitErr := <-waitDone:
-				return wrapHookProcessError(normalizeHookWaitError(waitErr), hook.ProcessState)
+				return complete(wrapHookProcessError(normalizeHookWaitError(waitErr), hook.ProcessState))
 			default:
 			}
-			return stopHookAndWait(boundary, hook, waitDone, 0, tracker.firstSignal())
+			return complete(stopHookAndWait(boundary, hook, waitDone, 0, tracker.firstSignal()))
 		case <-signalDone:
 			if !tracker.generationChanged(signalGeneration) {
 				continue
 			}
 			select {
 			case waitErr := <-waitDone:
-				return wrapHookProcessError(normalizeHookWaitError(waitErr), hook.ProcessState)
+				return complete(wrapHookProcessError(normalizeHookWaitError(waitErr), hook.ProcessState))
 			default:
 			}
-			return stopHookAndWait(boundary, hook, waitDone, 0, tracker.firstSignal())
+			return complete(stopHookAndWait(boundary, hook, waitDone, 0, tracker.firstSignal()))
 		}
 	}
 }
