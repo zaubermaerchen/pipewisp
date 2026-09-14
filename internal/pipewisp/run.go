@@ -42,16 +42,21 @@ func runWithOptions(opts options, in io.Reader, out io.Writer, diagnostics io.Wr
 	state := newLifecycleState()
 	countedOut := state.writer(out)
 	reporter := newNamedVerboseReporter(diagnostics, opts.name, opts.verbose)
-	if opts.verbose || opts.nameSet {
+	if opts.verbose || opts.nameSet || opts.dryRun {
 		diagnostics = reporter
 	}
 	asyncHooks := newAsyncHookManager(diagnostics)
+	if asyncHooks.reporter == nil {
+		diagnostics = asyncHooks.diagnostics
+	}
 	if opts.eventsFDSet {
 		state.events = newEventEmitter(opts.eventsFD, asyncHooks.diagnostics)
 		if state.events != nil {
 			defer state.events.close()
 		}
 	}
+	asyncHooks.events = state.events
+	asyncHooks.dryRun = opts.dryRun
 
 	// Subscribe before ready so a signal during readiness is retained for final status selection.
 	tracker, stopSignals := subscribePassthroughSignals()
@@ -62,7 +67,7 @@ func runWithOptions(opts options, in io.Reader, out io.Writer, diagnostics io.Wr
 	reporter.event(readyContext)
 	state.emit(readyContext.event)
 	if opts.onReadySet {
-		if err := runHookWithContextAndTracker("on-ready", opts.onReady, readyContext, diagnostics, opts.hookTimeout, tracker, opts.ignoreHookErrors); err != nil {
+		if err := runHookWithContextAndTrackerAndSideEffect("on-ready", opts.onReady, readyContext, diagnostics, opts.hookTimeout, tracker, opts.ignoreHookErrors, state.events, opts.dryRun); err != nil {
 			if sig := tracker.poll(); sig != nil {
 				done = completion{signal: sig}
 			} else {
@@ -91,7 +96,7 @@ func runWithOptions(opts options, in io.Reader, out io.Writer, diagnostics io.Wr
 						return nil
 					}
 					context = hookContextForInvocation(state, "first-data", context, opts.verbose)
-					return runHookWithContextAndTracker("on-first-data", opts.onFirstData, context, diagnostics, opts.hookTimeout, tracker, opts.ignoreHookErrors)
+					return runHookWithContextAndTrackerAndSideEffect("on-first-data", opts.onFirstData, context, diagnostics, opts.hookTimeout, tracker, opts.ignoreHookErrors, state.events, opts.dryRun)
 				},
 			}
 			if opts.verbose || state.events != nil {
@@ -145,7 +150,7 @@ func runWithOptions(opts options, in io.Reader, out io.Writer, diagnostics io.Wr
 	var runShutdown func() error
 	if opts.onShutdownSet {
 		runShutdown = func() error {
-			return runHookWithContextAndTracker("on-shutdown", opts.onShutdown, shutdownContext, diagnostics, opts.hookTimeout, tracker, opts.ignoreHookErrors)
+			return runHookWithContextAndTrackerAndSideEffect("on-shutdown", opts.onShutdown, shutdownContext, diagnostics, opts.hookTimeout, tracker, opts.ignoreHookErrors, state.events, opts.dryRun)
 		}
 	}
 	return finishCompletionWithTracker(done, runShutdown, diagnostics, tracker)

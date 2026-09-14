@@ -13,6 +13,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -277,6 +278,71 @@ func TestEventsWarningSharesDiagnosticSynchronizerWithAsyncHooks(t *testing.T) {
 	}
 }
 
+func TestEventsWarningSharesDiagnosticSynchronizerWithSyncHookOutput(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the large POSIX hook output makes the overlap deterministic")
+	}
+	readEvents, writeEvents, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer writeEvents.Close()
+
+	diagnostics := &diagnosticConcurrencyWriter{
+		warningEntered: make(chan struct{}),
+		hookOutputSeen: make(chan struct{}),
+		release:        make(chan struct{}),
+	}
+	gatePath := t.TempDir() + string(os.PathSeparator) + "release"
+	command := "while [ ! -e " + unixQuote(gatePath) + " ]; do :; done; " + hookOutputCommand(strings.Repeat("hook-output", 8192))
+	status := make(chan int, 1)
+	go func() {
+		status <- Run([]string{
+			"--events-fd", strconv.FormatUint(uint64(writeEvents.Fd()), 10),
+			"--on-ready", command,
+		}, strings.NewReader(""), io.Discard, diagnostics)
+	}()
+
+	var ready lifecycleEventRecord
+	if err := json.NewDecoder(readEvents).Decode(&ready); err != nil {
+		t.Fatalf("decode ready event: %v", err)
+	}
+	if ready.Event != "ready" {
+		t.Fatalf("first event = %q, want ready", ready.Event)
+	}
+	_ = readEvents.Close()
+
+	select {
+	case <-diagnostics.warningEntered:
+	case <-time.After(time.Second):
+		diagnostics.releaseOnce.Do(func() { close(diagnostics.release) })
+		t.Fatal("event failure warning did not reach diagnostics")
+	}
+	if err := os.WriteFile(gatePath, nil, 0600); err != nil {
+		diagnostics.releaseOnce.Do(func() { close(diagnostics.release) })
+		t.Fatalf("write hook output gate: %v", err)
+	}
+	select {
+	case <-diagnostics.hookOutputSeen:
+		diagnostics.releaseOnce.Do(func() { close(diagnostics.release) })
+		t.Fatal("sync hook output overlapped the event failure warning")
+	case <-time.After(200 * time.Millisecond):
+	}
+	diagnostics.releaseOnce.Do(func() { close(diagnostics.release) })
+
+	select {
+	case got := <-status:
+		if got != 0 {
+			t.Fatalf("Run() status = %d, want 0", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Run() did not finish after releasing diagnostics")
+	}
+	if diagnostics.overlap.Load() {
+		t.Fatal("diagnostic writes overlapped")
+	}
+}
+
 func delayedFailingHookCommand(duration time.Duration) string {
 	if os.PathSeparator == '\\' {
 		return hookSleepCommand(duration) + " & exit /b 7"
@@ -289,6 +355,36 @@ type diagnosticOverlapWriter struct {
 	release chan struct{}
 	active  atomic.Int32
 	output  bytes.Buffer
+}
+
+type diagnosticConcurrencyWriter struct {
+	warningEntered chan struct{}
+	hookOutputSeen chan struct{}
+	release        chan struct{}
+	releaseOnce    sync.Once
+	warningOnce    sync.Once
+	hookOutputOnce sync.Once
+	warningActive  atomic.Bool
+	active         atomic.Int32
+	overlap        atomic.Bool
+}
+
+func (writer *diagnosticConcurrencyWriter) Write(p []byte) (int, error) {
+	if writer.active.Add(1) > 1 {
+		writer.overlap.Store(true)
+	}
+	defer writer.active.Add(-1)
+	if strings.Contains(string(p), "events disabled") {
+		writer.warningActive.Store(true)
+		writer.warningOnce.Do(func() { close(writer.warningEntered) })
+		<-writer.release
+		writer.warningActive.Store(false)
+	} else {
+		if writer.warningActive.Load() {
+			writer.hookOutputOnce.Do(func() { close(writer.hookOutputSeen) })
+		}
+	}
+	return len(p), nil
 }
 
 func (writer *diagnosticOverlapWriter) Write(p []byte) (int, error) {

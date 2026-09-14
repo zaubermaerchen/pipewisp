@@ -19,6 +19,7 @@ type options struct {
 	eventsFDSet      bool
 	showVersion      bool
 	showDescription  bool
+	dryRun           bool
 	verbose          bool
 	onReady          string
 	onReadySet       bool
@@ -57,6 +58,11 @@ func parseArgs(args []string) (options, bool, error) {
 				return options{}, false, fmt.Errorf("--version cannot be combined with other arguments")
 			}
 			return options{showVersion: true}, false, nil
+		case arg == "--dry-run":
+			if opts.dryRun {
+				return options{}, false, fmt.Errorf("--dry-run specified more than once")
+			}
+			opts.dryRun = true
 		case arg == "--verbose":
 			if opts.verbose {
 				return options{}, false, fmt.Errorf("--verbose specified more than once")
@@ -453,5 +459,5 @@ func isBidiControl(r rune) bool {
 }
 
 func printUsage(out io.Writer) {
-	_, _ = out.Write([]byte("Usage: pipewisp [--name NAME] [--events-fd FD] [--verbose] [--on-ready COMMAND] [--on-first-data COMMAND] [--on-shutdown COMMAND] [--idle DURATION] [--on-idle COMMAND] [--on-idle.async COMMAND] [--on-resume COMMAND] [--on-resume.async COMMAND] [--hook-timeout DURATION] [--ignore-hook-errors]\n       pipewisp --describe\n       pipewisp --version\n"))
+	_, _ = out.Write([]byte("Usage: pipewisp [--name NAME] [--events-fd FD] [--dry-run] [--verbose] [--on-ready COMMAND] [--on-first-data COMMAND] [--on-shutdown COMMAND] [--idle DURATION] [--on-idle COMMAND] [--on-idle.async COMMAND] [--on-resume COMMAND] [--on-resume.async COMMAND] [--hook-timeout DURATION] [--ignore-hook-errors]\n       pipewisp --describe\n       pipewisp --version\n"))
 }

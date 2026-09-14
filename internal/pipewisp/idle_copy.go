@@ -191,12 +191,16 @@ func runIdleCopyWithState(opts options, in io.Reader, out io.Writer, diagnostics
 	if ownedEvents {
 		defer state.events.close()
 	}
+	asyncHooks.events = state.events
+	asyncHooks.dryRun = opts.dryRun
 	done := runIdleCopyWithAsyncManager(opts, in, out, diagnostics, tracker, state, asyncHooks)
 	asyncHooks.stopAndWait()
 	return done
 }
 
 func runIdleCopyWithAsyncManager(opts options, in io.Reader, out io.Writer, diagnostics io.Writer, tracker *signalTracker, state *lifecycleState, asyncHooks *asyncHookManager) completion {
+	asyncHooks.events = state.events
+	asyncHooks.dryRun = opts.dryRun
 	if asyncHooks.reporter == nil {
 		diagnostics = asyncHooks.diagnostics
 	}
@@ -341,7 +345,7 @@ func (runner *idleCopyRunner) handleRead(result idleReadResult) bool {
 					return false
 				}
 				resumeContext = hookContextForInvocation(runner.state, "resume", resumeContext, runner.opts.verbose)
-				if err := runHookWithContextAndTracker("on-resume", runner.opts.onResume, resumeContext, runner.diagnostics, runner.opts.hookTimeout, runner.tracker, runner.opts.ignoreHookErrors); err != nil {
+				if err := runHookWithContextAndTrackerAndSideEffect("on-resume", runner.opts.onResume, resumeContext, runner.diagnostics, runner.opts.hookTimeout, runner.tracker, runner.opts.ignoreHookErrors, runner.state.events, runner.opts.dryRun); err != nil {
 					runner.done.resumeErr = err
 				}
 			}
@@ -410,7 +414,7 @@ func (runner *idleCopyRunner) handleFirstData() bool {
 		return false
 	}
 	context := hookContextForInvocation(runner.state, "first-data", runner.eventContext, runner.opts.verbose)
-	if err := runHookWithContextAndTracker("on-first-data", runner.opts.onFirstData, context, runner.diagnostics, runner.opts.hookTimeout, runner.tracker, runner.opts.ignoreHookErrors); err != nil {
+	if err := runHookWithContextAndTrackerAndSideEffect("on-first-data", runner.opts.onFirstData, context, runner.diagnostics, runner.opts.hookTimeout, runner.tracker, runner.opts.ignoreHookErrors, runner.state.events, runner.opts.dryRun); err != nil {
 		runner.done.firstDataHookFailed = true
 	}
 	if sig := runner.pollSignal(); sig != nil {
@@ -449,7 +453,7 @@ func (runner *idleCopyRunner) handleIdle() bool {
 			return false
 		}
 		idleContext = hookContextForInvocation(runner.state, "idle", idleContext, runner.opts.verbose)
-		if err := runHookWithContextAndTracker("on-idle", runner.opts.onIdle, idleContext, runner.diagnostics, runner.opts.hookTimeout, runner.tracker, runner.opts.ignoreHookErrors); err != nil {
+		if err := runHookWithContextAndTrackerAndSideEffect("on-idle", runner.opts.onIdle, idleContext, runner.diagnostics, runner.opts.hookTimeout, runner.tracker, runner.opts.ignoreHookErrors, runner.state.events, runner.opts.dryRun); err != nil {
 			runner.done.idleErr = err
 		}
 	}

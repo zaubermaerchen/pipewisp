@@ -128,7 +128,7 @@ Exit status sections remain authoritative for exact behavior and precedence.
 ```text
 pipewisp --describe
 pipewisp --version
-pipewisp [--name NAME] [--events-fd FD] [--verbose] [--on-ready COMMAND] [--on-first-data COMMAND] [--on-shutdown COMMAND] [--idle DURATION] [--on-idle COMMAND] [--on-idle.async COMMAND] [--on-resume COMMAND] [--on-resume.async COMMAND] [--hook-timeout DURATION] [--ignore-hook-errors]
+pipewisp [--name NAME] [--events-fd FD] [--dry-run] [--verbose] [--on-ready COMMAND] [--on-first-data COMMAND] [--on-shutdown COMMAND] [--idle DURATION] [--on-idle COMMAND] [--on-idle.async COMMAND] [--on-resume COMMAND] [--on-resume.async COMMAND] [--hook-timeout DURATION] [--ignore-hook-errors]
 ```
 
 `--describe` emits one JSON object describing the current CLI, stream
@@ -169,6 +169,11 @@ it, hook failures remain strict and affect processing or final status as
 described below. `--verbose` is also value-less and writes lifecycle and hook
 diagnostics to stderr. It works without hooks and, when combined with `--idle`,
 enables passive idle/resume observation without requiring either idle hook.
+`--dry-run` is a value-less opt-in flag that keeps lifecycle observation, stream
+copying, timing, and event-FD output active while suppressing every hook process.
+Each configured hook is reported on stderr as `[DRY RUN]`; the option applies to
+both synchronous and asynchronous hooks and may be specified only once. The
+diagnostic command is quoted/escaped as a single line.
 
 `--name` assigns a human-readable identity to this pipewisp instance. Runtime
 diagnostics use `pipewisp[NAME]:` instead of `pipewisp:`, but the option does
@@ -233,9 +238,27 @@ as unknown options.
 `--help` prints usage and exits successfully.
 
 When `--events-fd` is set, one JSON object is written for each applicable
-`ready`, `first-data`, `idle`, `resume`, and `shutdown` transition. Each object
-contains exactly `event` and an RFC3339Nano `timestamp`; records are written
-synchronously in lifecycle order, whether or not a corresponding hook is set.
+`ready`, `first-data`, `idle`, `resume`, and `shutdown` transition. Each
+lifecycle object contains exactly `event` and an RFC3339Nano `timestamp`; records
+are written synchronously in lifecycle order, whether or not a corresponding
+hook is set. Configured hooks also produce a side-effect object after their
+lifecycle object in the event-FD stream:
+
+```json
+{"event":"side-effect","type":"execute-command","trigger":"ready","command":"prepare","executed":true,"timestamp":"2025-01-01T00:00:00Z"}
+```
+
+`executed` is true once a hook process starts. A suppressed dry-run hook uses
+`"executed":false,"reason":"dry-run"`; a process start failure uses
+`"executed":false,"reason":"start-failed"`. Non-zero exits, timeouts, and
+signals remain start-successful side effects and do not produce completion
+records. This lifecycle-to-side-effect order is guaranteed only within the
+event-FD stream; no relative ordering is guaranteed between event-FD records,
+stderr, and hook output. Commands are represented as JSON strings using the
+standard JSON encoder; no byte-for-byte command guarantee is made beyond
+JSON's UTF-8 representation. As with lifecycle records, an event write failure
+warns once, disables further event output, and lets hook and stream processing
+continue.
 
 Synchronous commands are executed in this order:
 

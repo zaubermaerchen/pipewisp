@@ -109,7 +109,7 @@ func TestEventEmitterDoesNotLeakBorrowedDescriptorToHooks(t *testing.T) {
 		}
 		records = append(records, record)
 	}
-	if got, want := len(records), 2; got != want {
+	if got, want := len(records), 3; got != want {
 		t.Fatalf("event count = %d, want %d: %#v", got, want, records)
 	}
 }

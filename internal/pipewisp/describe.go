@@ -61,10 +61,11 @@ type stateTransition struct {
 }
 
 type sideEffect struct {
-	Type    string `json:"type"`
-	Trigger string `json:"trigger"`
-	Option  string `json:"option"`
-	Async   bool   `json:"async,omitempty"`
+	Type            string `json:"type"`
+	Trigger         string `json:"trigger"`
+	Option          string `json:"option"`
+	Async           bool   `json:"async,omitempty"`
+	DryRunSupported bool   `json:"dry_run_supported"`
 }
 
 var descriptionOptionConflicts = []string{
@@ -73,6 +74,7 @@ var descriptionOptionConflicts = []string{
 	"--version",
 	"--name",
 	"--events-fd",
+	"--dry-run",
 	"--verbose",
 	"--on-ready",
 	"--on-first-data",
@@ -98,6 +100,7 @@ func newDescription() description {
 				{Name: "--version", Type: "boolean", Conflicts: descriptionOptionConflictsWithout("--version")},
 				{Name: "--name", Type: "string"},
 				{Name: "--events-fd", Type: "fd"},
+				{Name: "--dry-run", Type: "boolean"},
 				{Name: "--verbose", Type: "boolean"},
 				{Name: "--on-ready", Type: "command"},
 				{Name: "--on-first-data", Type: "command"},
@@ -170,13 +173,13 @@ func newDescription() description {
 			},
 		},
 		SideEffects: []sideEffect{
-			{Type: "execute-command", Trigger: "ready", Option: "--on-ready"},
-			{Type: "execute-command", Trigger: "first-data", Option: "--on-first-data"},
-			{Type: "execute-command", Trigger: "shutdown", Option: "--on-shutdown"},
-			{Type: "execute-command", Trigger: "idle", Option: "--on-idle"},
-			{Type: "execute-command", Trigger: "idle", Option: "--on-idle.async", Async: true},
-			{Type: "execute-command", Trigger: "resume", Option: "--on-resume"},
-			{Type: "execute-command", Trigger: "resume", Option: "--on-resume.async", Async: true},
+			{Type: "execute-command", Trigger: "ready", Option: "--on-ready", DryRunSupported: true},
+			{Type: "execute-command", Trigger: "first-data", Option: "--on-first-data", DryRunSupported: true},
+			{Type: "execute-command", Trigger: "shutdown", Option: "--on-shutdown", DryRunSupported: true},
+			{Type: "execute-command", Trigger: "idle", Option: "--on-idle", DryRunSupported: true},
+			{Type: "execute-command", Trigger: "idle", Option: "--on-idle.async", Async: true, DryRunSupported: true},
+			{Type: "execute-command", Trigger: "resume", Option: "--on-resume", DryRunSupported: true},
+			{Type: "execute-command", Trigger: "resume", Option: "--on-resume.async", Async: true, DryRunSupported: true},
 		},
 	}
 }

@@ -146,6 +146,7 @@ func TestPublicDescriptionMetadataIsComplete(t *testing.T) {
 		"--version":            "boolean",
 		"--name":               "string",
 		"--events-fd":          "fd",
+		"--dry-run":            "boolean",
 		"--verbose":            "boolean",
 		"--on-ready":           "command",
 		"--on-first-data":      "command",
@@ -331,10 +332,11 @@ type publicStreamInterface struct {
 }
 
 type publicSideEffect struct {
-	Type    string `json:"type"`
-	Trigger string `json:"trigger"`
-	Option  string `json:"option"`
-	Async   bool   `json:"async"`
+	Type            string `json:"type"`
+	Trigger         string `json:"trigger"`
+	Option          string `json:"option"`
+	Async           bool   `json:"async"`
+	DryRunSupported bool   `json:"dry_run_supported"`
 }
 
 func rawString(fields map[string]json.RawMessage, name string) (string, error) {
@@ -377,7 +379,7 @@ func rawStrings(t *testing.T, fields map[string]json.RawMessage, name string) []
 func TestDescriptionCLIAndLifecycleMetadata(t *testing.T) {
 	description := newDescription()
 
-	if got, want := len(description.CLISchema.Options), 16; got != want {
+	if got, want := len(description.CLISchema.Options), 17; got != want {
 		t.Fatalf("CLI option count = %d, want %d", got, want)
 	}
 	wantTypes := map[string]string{
@@ -386,6 +388,7 @@ func TestDescriptionCLIAndLifecycleMetadata(t *testing.T) {
 		"--version":            "boolean",
 		"--name":               "string",
 		"--events-fd":          "fd",
+		"--dry-run":            "boolean",
 		"--verbose":            "boolean",
 		"--on-ready":           "command",
 		"--on-first-data":      "command",
@@ -454,6 +457,9 @@ func TestDescriptionSideEffects(t *testing.T) {
 		}
 		if effect.Async != async {
 			t.Errorf("side effect %s async = %v, want %v", effect.Option, effect.Async, async)
+		}
+		if !effect.DryRunSupported {
+			t.Errorf("side effect %s dry_run_supported = false, want true", effect.Option)
 		}
 		if effect.Trigger == "" {
 			t.Errorf("side effect %s trigger is empty", effect.Option)

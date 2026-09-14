@@ -15,6 +15,8 @@ import (
 type asyncHookManager struct {
 	diagnostics io.Writer
 	reporter    *verboseReporter
+	events      *eventEmitter
+	dryRun      bool
 
 	mu       sync.Mutex
 	hooks    map[*asyncHook]struct{}
@@ -23,13 +25,14 @@ type asyncHookManager struct {
 }
 
 type asyncHook struct {
-	manager   *asyncHookManager
-	name      string
-	event     string
-	started   time.Time
-	timeout   time.Duration
-	execution *hookExecution
-	done      chan struct{}
+	manager      *asyncHookManager
+	name         string
+	event        string
+	started      time.Time
+	timeout      time.Duration
+	timeoutTimer *time.Timer
+	execution    *hookExecution
+	done         chan struct{}
 }
 
 const asyncHookProcessPollInterval = 10 * time.Millisecond
@@ -48,15 +51,32 @@ func newAsyncHookManager(diagnostics io.Writer) *asyncHookManager {
 }
 
 func (manager *asyncHookManager) start(name, command string, context hookContext, timeout time.Duration) {
+	if manager.dryRun {
+		if manager.events != nil {
+			manager.events.emitSideEffect(context.event, command, false, "dry-run")
+		}
+		reportDryRun(manager.diagnostics, name, command)
+		return
+	}
 	if manager.reporter != nil {
 		manager.reporter.hookStart(context.event)
 	}
 	var started time.Time
-	execution, err := startHookExecution(command, context, manager.diagnostics, func() {
+	var timeoutTimer *time.Timer
+	var onStarted func()
+	if timeout > 0 {
+		onStarted = func() {
+			timeoutTimer = time.NewTimer(timeout)
+		}
+	}
+	execution, err := startHookExecutionWithCallbacks(command, context, manager.diagnostics, func() {
 		started = time.Now()
-	})
+	}, onStarted)
 	if err != nil {
 		startErr := &hookStartError{err: err}
+		if manager.events != nil {
+			manager.events.emitSideEffect(context.event, command, false, "start-failed")
+		}
 		if manager.reporter != nil {
 			manager.reporter.hookEnd(context.event, started, startErr)
 		}
@@ -64,13 +84,14 @@ func (manager *asyncHookManager) start(name, command string, context hookContext
 		return
 	}
 	hook := &asyncHook{
-		manager:   manager,
-		name:      name,
-		event:     context.event,
-		started:   started,
-		timeout:   timeout,
-		execution: execution,
-		done:      make(chan struct{}),
+		manager:      manager,
+		name:         name,
+		event:        context.event,
+		started:      started,
+		timeout:      timeout,
+		timeoutTimer: timeoutTimer,
+		execution:    execution,
+		done:         make(chan struct{}),
 	}
 	manager.mu.Lock()
 	if !manager.stopped {
@@ -78,6 +99,9 @@ func (manager *asyncHookManager) start(name, command string, context hookContext
 	}
 	manager.mu.Unlock()
 	go manager.wait(hook)
+	if manager.events != nil {
+		manager.events.emitSideEffect(context.event, command, true, "")
+	}
 }
 
 func (manager *asyncHookManager) wait(hook *asyncHook) {
@@ -89,10 +113,12 @@ func (manager *asyncHookManager) wait(hook *asyncHook) {
 		close(hook.done)
 	}()
 
-	var timeoutC <-chan time.Time
-	var timer *time.Timer
-	if hook.timeout > 0 {
+	timer := hook.timeoutTimer
+	if timer == nil && hook.timeout > 0 {
 		timer = time.NewTimer(hook.timeout)
+	}
+	var timeoutC <-chan time.Time
+	if timer != nil {
 		timeoutC = timer.C
 		defer timer.Stop()
 	}
