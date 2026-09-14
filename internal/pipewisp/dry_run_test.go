@@ -107,7 +107,7 @@ func TestRunEventsFDEmitsSideEffectRecords(t *testing.T) {
 		_ = os.Remove(eventsFile.Name())
 	}()
 
-	command := "printf 'ready'\n"
+	command := hookOutputCommand("ready")
 	var output, diagnostics bytes.Buffer
 	status := Run([]string{
 		"--events-fd", stringFD(eventsFile),
@@ -170,8 +170,11 @@ func TestRunEventsFDDryRunSideEffectRecords(t *testing.T) {
 	if got, want := output.String(), "input"; got != want {
 		t.Fatalf("stdout = %q, want %q", got, want)
 	}
-	if strings.Contains(diagnostics.String(), "not-run") && !strings.Contains(diagnostics.String(), "[DRY RUN]") {
-		t.Fatalf("dry-run command output leaked into diagnostics: %q", diagnostics.String())
+	wantDiagnostics := "pipewisp: [DRY RUN] on-ready: " + strconv.Quote(command) + "\n" +
+		"pipewisp: [DRY RUN] on-first-data: \"true\"\n" +
+		"pipewisp: [DRY RUN] on-shutdown: \"true\"\n"
+	if got := diagnostics.String(); got != wantDiagnostics {
+		t.Fatalf("diagnostics = %q, want %q", got, wantDiagnostics)
 	}
 
 	records := decodeDryRunEventRecords(t, eventsFile)
