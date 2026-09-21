@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"sync"
 	"time"
 )
 
@@ -53,15 +54,41 @@ type readResult struct {
 	err error
 }
 
-// readOne leaves exactly one Read outstanding. That keeps idle observation
-// from reading ahead while stdout is blocked.
-func readOne(in io.Reader, buffer []byte) <-chan readResult {
-	result := make(chan readResult, 1)
-	go func() {
-		n, err := in.Read(buffer)
-		result <- readResult{n: n, err: err}
-	}()
-	return result
+// readWorker owns one persistent Read goroutine. Requests are explicit so an
+// idle run never has more than one read outstanding or reads ahead while the
+// stdout path is blocked.
+type readWorker struct {
+	in       io.Reader
+	requests chan []byte
+	results  chan readResult
+	stopOnce sync.Once
+}
+
+func newReadWorker(in io.Reader) *readWorker {
+	worker := &readWorker{
+		in:       in,
+		requests: make(chan []byte),
+		results:  make(chan readResult, 1),
+	}
+	go worker.run()
+	return worker
+}
+
+func (worker *readWorker) run() {
+	for buffer := range worker.requests {
+		n, err := worker.in.Read(buffer)
+		worker.results <- readResult{n: n, err: err}
+	}
+}
+
+func (worker *readWorker) request(buffer []byte) {
+	worker.requests <- buffer
+}
+
+func (worker *readWorker) stop() {
+	worker.stopOnce.Do(func() {
+		close(worker.requests)
+	})
 }
 
 // Run executes khsier with the supplied arguments and streams. It returns the
@@ -121,7 +148,10 @@ func runPlain(in io.Reader, out io.Writer, emitter *eventEmitter) int {
 
 func runIdle(idle time.Duration, in io.Reader, out io.Writer, emitter *eventEmitter) int {
 	buffer := make([]byte, readBufferSize)
-	readDone := readOne(in, buffer)
+	worker := newReadWorker(in)
+	defer worker.stop()
+	worker.request(buffer)
+	readDone := worker.results
 	var timer *time.Timer
 	var timerC <-chan time.Time
 	seenData := false
@@ -226,7 +256,7 @@ func runIdle(idle time.Duration, in io.Reader, out io.Writer, emitter *eventEmit
 				}
 			}
 		}
-		readDone = readOne(in, buffer)
+		worker.request(buffer)
 		if seenData && !isIdle && timerC == nil {
 			startTimer()
 		}
