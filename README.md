@@ -43,12 +43,15 @@ From a checkout:
 ```sh
 go install ./cmd/pipewisp
 go build -o pipewisp ./cmd/pipewisp
+go install ./cmd/khsier
+go build -o khsier ./cmd/khsier
 ```
 
 The module can also be installed directly once published:
 
 ```sh
 go install github.com/zaubermaerchen/pipewisp/cmd/pipewisp@latest
+go install github.com/zaubermaerchen/pipewisp/cmd/khsier@latest
 ```
 
 ## Download releases
@@ -82,6 +85,10 @@ $expected = (Get-Content SHA256SUMS | Where-Object { $_ -like "*  $archive" }).S
 $actual = (Get-FileHash -Algorithm SHA256 $archive).Hash.ToLowerInvariant()
 if ($actual -ne $expected) { throw "checksum mismatch: $archive" }
 ```
+
+Each release archive contains both `pipewisp` and `khsier` binaries built with
+the same release version. `khsier` is the minimal stream-boundary observer;
+see the [khsier reference](docs/khsier.md) for its event and idle semantics.
 
 ## Lifecycle
 
