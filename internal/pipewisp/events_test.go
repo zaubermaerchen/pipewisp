@@ -239,6 +239,22 @@ func TestEventWarningPreservesNamedPrefix(t *testing.T) {
 	}
 }
 
+func TestEventWarningStartsNewLineAfterCustomReporterOutput(t *testing.T) {
+	readEvents, writeEvents := newObservationPipe(t)
+	_ = readEvents.Close()
+	defer writeEvents.Close()
+
+	output := newNotifyingDiagnosticWriter()
+	reporter := newNamedVerboseReporter(output, "relay", true)
+	_, _ = reporter.Write([]byte("unfinished"))
+	emitter := newEventEmitter(int(testEventFD(t, writeEvents)), reporter)
+	emitter.emit("ready")
+	output.waitWarning(t)
+	if got := output.String(); !strings.HasPrefix(got, "unfinished\npipewisp[relay]: events disabled:") {
+		t.Fatalf("diagnostics = %q, want warning on a new line", got)
+	}
+}
+
 type channelDiagnosticWriter struct{ warnings chan string }
 
 func (writer *channelDiagnosticWriter) Write(p []byte) (int, error) {
