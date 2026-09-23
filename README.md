@@ -147,21 +147,20 @@ tolerate additional fields in later compatible descriptions. The description
 uses `version` from the same build metadata as `--version`.
 
 Each hook option is optional and may be specified at most once. `--events-fd`
-selects an existing file descriptor for JSONL lifecycle events; it accepts
-descriptors `3` and higher and may be written as either `--events-fd FD` or
-`--events-fd=FD`. Pipewisp borrows this descriptor and does not close it. If
-initialization or an event write fails, pipewisp writes one warning to stderr,
-disables subsequent event output, and continues the main pipeline. Pipewisp
-marks the borrowed descriptor non-inheritable for lifecycle hooks and future
-child processes; it remains open for the caller to use.
-On Unix, `dup` shares the open-file description with the borrowed descriptor, so
-pipewisp temporarily enables `O_NONBLOCK` for each event write and restores the
-original blocking mode before returning. Do not use the same descriptor
-concurrently for operations that depend on its blocking mode.
-On Windows, pipewisp temporarily enables `PIPE_NOWAIT` for each event write and
-restores the complete named-pipe mode, including the read mode, before
-returning; disk handles are written directly. Do not use the same descriptor
-concurrently for operations that depend on its pipe mode.
+selects a caller-owned descriptor `3` or higher for synchronous JSONL lifecycle
+observations. Use `--events-fd FD` or `--events-fd=FD`. On Unix, the descriptor
+must be a writable pipe, FIFO, or socket already configured with `O_NONBLOCK`.
+On Windows, it must be a pipe handle whose `PIPE_NOWAIT` mode can be verified.
+The caller must maintain that mode while pipewisp runs and drain the consumer.
+Pipewisp validates the descriptor before reading stdin, running hooks, or
+writing events; an unsupported type or mode exits with status `2` and a stderr
+diagnostic. Pipewisp duplicates the descriptor for its own use, keeps its
+duplicate out of hooks, and never closes or changes the borrowed descriptor's
+mode, status flags, or inheritance setting. Before each event write, it checks
+the mode again. A mode change, write failure, or short write disables further
+events with at most one warning while primary stream processing continues.
+Writes are not retried under backpressure. A short write can leave an
+incomplete final JSONL record.
 
 `--idle` is a Go duration such as `250ms` or `2s`; it must be positive and must
 be used with at least one of `--verbose`, `--events-fd`, `--on-idle`,
@@ -224,7 +223,7 @@ producer | pipewisp --idle 2s --on-idle 'printf "idle\\n"' --on-resume 'printf "
 producer | pipewisp --idle 2s --on-idle.async 'notify-idle' --on-resume.async 'notify-active'
 producer | pipewisp --idle=250ms --on-idle='notify-idle'
 producer | pipewisp --verbose --idle 2s
-producer | pipewisp --events-fd 3 --idle 2s 3>events.jsonl
+producer | pipewisp --events-fd 3 --idle 2s # FD 3 is a preopened nonblocking observation pipe
 producer | pipewisp --name relay --verbose --idle 2s
 producer | pipewisp --hook-timeout=5s --on-ready 'prepare' --on-shutdown 'cleanup'
 producer | pipewisp --ignore-hook-errors --on-ready 'notify-start' --on-shutdown 'notify-stop'

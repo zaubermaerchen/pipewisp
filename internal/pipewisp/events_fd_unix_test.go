@@ -6,11 +6,9 @@ package pipewisp
 
 import (
 	"bytes"
-	"encoding/json"
 	"errors"
 	"io"
 	"os"
-	"os/exec"
 	"strconv"
 	"strings"
 	"testing"
@@ -20,19 +18,14 @@ import (
 )
 
 func TestEventEmitterDoesNotPassOwnedDescriptorToHooks(t *testing.T) {
-	eventsFile, err := os.CreateTemp("", "pipewisp-events-")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() {
-		_ = eventsFile.Close()
-		_ = os.Remove(eventsFile.Name())
-	}()
+	readEvents, writeEvents := newObservationPipe(t)
+	defer readEvents.Close()
+	defer writeEvents.Close()
 
 	// Make inheritance observable: the descriptor supplied by the caller is
 	// deliberately inheritable, while the duplicate owned by pipewisp must not
 	// be passed to a hook.
-	originalFD := int(eventsFile.Fd())
+	originalFD := int(testEventFD(t, writeEvents))
 	if _, err := unix.FcntlInt(uintptr(originalFD), unix.F_SETFD, 0); err != nil {
 		t.Fatal(err)
 	}
@@ -59,72 +52,17 @@ func TestEventEmitterDoesNotPassOwnedDescriptorToHooks(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if flags&unix.FD_CLOEXEC == 0 {
-		t.Fatalf("borrowed descriptor flags = %#x, want FD_CLOEXEC", flags)
-	}
-}
-
-func TestEventEmitterDoesNotLeakBorrowedDescriptorToHooks(t *testing.T) {
-	if os.Getenv("PIPEWISP_EVENT_FD_HELPER") == "1" {
-		var output, diagnostics bytes.Buffer
-		command := "printf polluted >&3 2>/dev/null || :"
-		if status := Run([]string{"--events-fd", "3", "--on-ready", command}, strings.NewReader(""), &output, &diagnostics); status != 0 {
-			t.Fatalf("Run() status = %d, want 0; diagnostics = %q", status, diagnostics.String())
-		}
-		return
-	}
-
-	eventsFile, err := os.CreateTemp("", "pipewisp-events-")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() {
-		_ = eventsFile.Close()
-		_ = os.Remove(eventsFile.Name())
-	}()
-
-	command := exec.Command(os.Args[0], "-test.run=^TestEventEmitterDoesNotLeakBorrowedDescriptorToHooks$")
-	command.Env = append(os.Environ(), "PIPEWISP_EVENT_FD_HELPER=1")
-	command.ExtraFiles = []*os.File{eventsFile}
-	var helperOutput, helperDiagnostics bytes.Buffer
-	command.Stdout = &helperOutput
-	command.Stderr = &helperDiagnostics
-	if err := command.Run(); err != nil {
-		t.Fatalf("hook isolation helper failed: %v\nstdout=%q\nstderr=%q", err, helperOutput.String(), helperDiagnostics.String())
-	}
-
-	if _, err := eventsFile.Seek(0, 0); err != nil {
-		t.Fatal(err)
-	}
-	decoder := json.NewDecoder(eventsFile)
-	var records []lifecycleEventRecord
-	for {
-		var record lifecycleEventRecord
-		err := decoder.Decode(&record)
-		if errors.Is(err, io.EOF) {
-			break
-		}
-		if err != nil {
-			t.Fatalf("event stream contains hook output: %v", err)
-		}
-		records = append(records, record)
-	}
-	if got, want := len(records), 3; got != want {
-		t.Fatalf("event count = %d, want %d: %#v", got, want, records)
+	if flags&unix.FD_CLOEXEC != 0 {
+		t.Fatalf("borrowed descriptor flags = %#x, want inheritable", flags)
 	}
 }
 
 func TestEventEmitterClosesOnlyOwnedDescriptor(t *testing.T) {
-	eventsFile, err := os.CreateTemp("", "pipewisp-events-")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() {
-		_ = eventsFile.Close()
-		_ = os.Remove(eventsFile.Name())
-	}()
+	readEvents, writeEvents := newObservationPipe(t)
+	defer readEvents.Close()
+	defer writeEvents.Close()
 
-	originalFD := int(eventsFile.Fd())
+	originalFD := int(testEventFD(t, writeEvents))
 	emitter := newEventEmitter(originalFD, io.Discard)
 	if emitter == nil {
 		t.Fatal("newEventEmitter() returned nil")
@@ -135,19 +73,16 @@ func TestEventEmitterClosesOnlyOwnedDescriptor(t *testing.T) {
 	if _, err := unix.FcntlInt(ownedFD, unix.F_GETFD, 0); !errors.Is(err, unix.EBADF) {
 		t.Fatalf("owned descriptor error = %v, want EBADF", err)
 	}
-	if _, err := eventsFile.Stat(); err != nil {
+	if _, err := writeEvents.Stat(); err != nil {
 		t.Fatalf("closing emitter closed caller descriptor: %v", err)
 	}
 }
 
 func TestEventEmitterWriteDoesNotWaitForFullConsumer(t *testing.T) {
-	readEvents, writeEvents, err := os.Pipe()
-	if err != nil {
-		t.Fatal(err)
-	}
+	readEvents, writeEvents := newObservationPipe(t)
 	defer readEvents.Close()
 	defer writeEvents.Close()
-	writeFD := int(writeEvents.Fd())
+	writeFD := int(testEventFD(t, writeEvents))
 	originalFlags, err := unix.FcntlInt(uintptr(writeFD), unix.F_GETFL, 0)
 	if err != nil {
 		t.Fatal(err)
@@ -200,5 +135,72 @@ func TestEventEmitterWriteDoesNotWaitForFullConsumer(t *testing.T) {
 		t.Fatal(err)
 	} else if got&unix.O_NONBLOCK != originalFlags&unix.O_NONBLOCK {
 		t.Fatalf("caller descriptor blocking mode = %#x, want %#x", got&unix.O_NONBLOCK, originalFlags&unix.O_NONBLOCK)
+	}
+}
+
+func TestUnixEventDescriptorRejectsBlockingAndRegularFilesBeforeInput(t *testing.T) {
+	regular, err := os.CreateTemp(t.TempDir(), "events-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer regular.Close()
+	read, write := newObservationPipe(t)
+	defer read.Close()
+	defer write.Close()
+	if err := unix.SetNonblock(int(write.Fd()), false); err != nil {
+		t.Fatal(err)
+	}
+	for _, file := range []*os.File{regular, write} {
+		input := &writerToReader{data: []byte("payload")}
+		var output, diagnostics bytes.Buffer
+		if got := Run([]string{"--events-fd", strconv.Itoa(int(file.Fd()))}, input, &output, &diagnostics); got != 2 {
+			t.Fatalf("Run(%v) = %d, want 2; diagnostics = %q", file.Name(), got, diagnostics.String())
+		}
+		if input.writeToCalled || output.Len() != 0 {
+			t.Fatal("invalid event descriptor processed stdin")
+		}
+	}
+}
+
+func TestUnixEventEmitterDisablesAfterModeChangeWithoutChangingBorrowedFlags(t *testing.T) {
+	read, write := newObservationPipe(t)
+	defer read.Close()
+	defer write.Close()
+	borrowed := int(testEventFD(t, write))
+	var diagnostics bytes.Buffer
+	emitter := newEventEmitter(borrowed, &diagnostics)
+	if emitter == nil {
+		t.Fatal("newEventEmitter() returned nil")
+	}
+	defer emitter.close()
+	if err := unix.SetNonblock(borrowed, false); err != nil {
+		t.Fatal(err)
+	}
+	emitter.emit("ready")
+	emitter.emit("shutdown")
+	if got := strings.Count(diagnostics.String(), "events disabled:"); got != 1 {
+		t.Fatalf("warnings = %d: %q", got, diagnostics.String())
+	}
+	flags, err := unix.FcntlInt(uintptr(borrowed), unix.F_GETFL, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if flags&unix.O_NONBLOCK != 0 {
+		t.Fatal("borrowed mode changed")
+	}
+}
+
+func TestUnixEventDescriptorAcceptsNonblockingSocket(t *testing.T) {
+	pair, err := unix.Socketpair(unix.AF_UNIX, unix.SOCK_STREAM, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unix.Close(pair[0])
+	defer unix.Close(pair[1])
+	if err := unix.SetNonblock(pair[0], true); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateEventDescriptor(pair[0]); err != nil {
+		t.Fatalf("socket rejected: %v", err)
 	}
 }

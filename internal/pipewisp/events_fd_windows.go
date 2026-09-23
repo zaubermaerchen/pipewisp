@@ -2,8 +2,7 @@
 
 package pipewisp
 
-// This file duplicates Windows event handles and temporarily switches pipe
-// writes to no-wait mode so an unavailable consumer cannot stall the pipeline.
+// This file validates Windows no-wait pipe handles and duplicates them for event writes.
 
 import (
 	"fmt"
@@ -12,8 +11,27 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-func setEventDescriptorNonInheritable(fd int) error {
-	return windows.SetHandleInformation(windows.Handle(fd), windows.HANDLE_FLAG_INHERIT, 0)
+func validateEventDescriptor(fd int) error {
+	handle := windows.Handle(fd)
+	fileType, err := windows.GetFileType(handle)
+	if err != nil {
+		return err
+	}
+	if fileType != windows.FILE_TYPE_PIPE {
+		return fmt.Errorf("handle must be a pipe")
+	}
+	return validateEventPipeMode(handle)
+}
+
+func validateEventPipeMode(handle windows.Handle) error {
+	var mode uint32
+	if err := windows.GetNamedPipeHandleState(handle, &mode, nil, nil, nil, nil, 0); err != nil {
+		return fmt.Errorf("verify event pipe mode: %w", err)
+	}
+	if mode&windows.PIPE_NOWAIT == 0 {
+		return fmt.Errorf("event pipe must have PIPE_NOWAIT set")
+	}
+	return nil
 }
 
 func duplicateEventFile(fd int) (*os.File, error) {
@@ -53,41 +71,13 @@ func writeEvent(file *os.File, data []byte) (int, error) {
 	var writeErr error
 	if err := connection.Control(func(raw uintptr) {
 		handle := windows.Handle(raw)
-		fileType, err := windows.GetFileType(handle)
-		if err != nil {
+		if err := validateEventPipeMode(handle); err != nil {
 			writeErr = err
 			return
 		}
-		if fileType != windows.FILE_TYPE_PIPE {
-			// Disk handles do not have a named-pipe wait mode and can be written
-			// directly.
-			writeErr = windows.WriteFile(handle, data, &n, nil)
-			return
-		}
-		writeErr = writeEventPipe(handle, data, &n)
+		writeErr = windows.WriteFile(handle, data, &n, nil)
 	}); err != nil {
 		return 0, err
 	}
 	return int(n), writeErr
-}
-
-func writeEventPipe(handle windows.Handle, data []byte, n *uint32) error {
-	var originalMode uint32
-	if err := windows.GetNamedPipeHandleState(handle, &originalMode, nil, nil, nil, nil, 0); err != nil {
-		return fmt.Errorf("get event pipe mode: %w", err)
-	}
-
-	nowaitMode := originalMode | windows.PIPE_NOWAIT
-	if err := windows.SetNamedPipeHandleState(handle, &nowaitMode, nil, nil); err != nil {
-		return fmt.Errorf("set event pipe no-wait mode: %w", err)
-	}
-
-	writeErr := windows.WriteFile(handle, data, n, nil)
-	if err := windows.SetNamedPipeHandleState(handle, &originalMode, nil, nil); err != nil {
-		if writeErr != nil {
-			return fmt.Errorf("%w (restore event pipe mode: %v)", writeErr, err)
-		}
-		return fmt.Errorf("restore event pipe mode: %w", err)
-	}
-	return writeErr
 }

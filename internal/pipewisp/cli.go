@@ -459,5 +459,5 @@ func isBidiControl(r rune) bool {
 }
 
 func printUsage(out io.Writer) {
-	_, _ = out.Write([]byte("Usage: pipewisp [--name NAME] [--events-fd FD] [--dry-run] [--verbose] [--on-ready COMMAND] [--on-first-data COMMAND] [--on-shutdown COMMAND] [--idle DURATION] [--on-idle COMMAND] [--on-idle.async COMMAND] [--on-resume COMMAND] [--on-resume.async COMMAND] [--hook-timeout DURATION] [--ignore-hook-errors]\n       pipewisp --describe\n       pipewisp --version\n"))
+	_, _ = out.Write([]byte("Usage: pipewisp [--name NAME] [--events-fd FD] [--dry-run] [--verbose] [--on-ready COMMAND] [--on-first-data COMMAND] [--on-shutdown COMMAND] [--idle DURATION] [--on-idle COMMAND] [--on-idle.async COMMAND] [--on-resume COMMAND] [--on-resume.async COMMAND] [--hook-timeout DURATION] [--ignore-hook-errors]\n       pipewisp --describe\n       pipewisp --version\n       --events-fd requires a writable nonblocking pipe/FIFO/socket on Unix or PIPE_NOWAIT pipe on Windows\n"))
 }

@@ -50,10 +50,15 @@ func runWithOptions(opts options, in io.Reader, out io.Writer, diagnostics io.Wr
 		diagnostics = asyncHooks.diagnostics
 	}
 	if opts.eventsFDSet {
-		state.events = newEventEmitter(opts.eventsFD, asyncHooks.diagnostics)
-		if state.events != nil {
-			defer state.events.close()
+		if err := validateEventDescriptor(opts.eventsFD); err != nil {
+			reportDiagnostic(diagnostics, fmt.Errorf("invalid --events-fd %d: %w", opts.eventsFD, err))
+			return 2
 		}
+		state.events = newEventEmitter(opts.eventsFD, asyncHooks.diagnostics)
+		if state.events == nil {
+			return 2
+		}
+		defer state.events.close()
 	}
 	asyncHooks.events = state.events
 	asyncHooks.dryRun = opts.dryRun

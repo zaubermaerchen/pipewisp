@@ -35,14 +35,6 @@ type eventEmitter struct {
 }
 
 func newEventEmitter(fd int, diagnostics io.Writer) *eventEmitter {
-	if fd < 3 {
-		reportDiagnostic(diagnostics, fmt.Errorf("events disabled: invalid file descriptor %d", fd))
-		return nil
-	}
-	if err := setEventDescriptorNonInheritable(fd); err != nil {
-		reportDiagnostic(diagnostics, fmt.Errorf("events disabled: protect file descriptor %d: %w", fd, err))
-		return nil
-	}
 	file, err := duplicateEventFile(fd)
 	if err != nil {
 		reportDiagnostic(diagnostics, fmt.Errorf("events disabled: duplicate file descriptor %d: %w", fd, err))
