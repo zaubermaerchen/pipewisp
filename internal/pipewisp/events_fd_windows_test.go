@@ -208,6 +208,29 @@ func TestWindowsEventDescriptorRejectsFileAndBlockingPipeBeforeInput(t *testing.
 	}
 }
 
+func TestWindowsEventDescriptorRejectsReadOnlyNowaitPipeBeforeInput(t *testing.T) {
+	name, err := windows.UTF16PtrFromString(`\\.\pipe\pipewisp-test-` + strconv.Itoa(os.Getpid()) + "-" + strconv.FormatInt(time.Now().UnixNano(), 10))
+	if err != nil {
+		t.Fatal(err)
+	}
+	read, err := windows.CreateNamedPipe(name, windows.PIPE_ACCESS_INBOUND, windows.PIPE_TYPE_BYTE|windows.PIPE_NOWAIT, 1, 4096, 4096, 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer windows.CloseHandle(read)
+	if got := windowsEventPipeMode(t, read); got&windows.PIPE_NOWAIT == 0 {
+		t.Fatalf("read-only pipe mode = %#x, want PIPE_NOWAIT", got)
+	}
+	input := &writerToReader{data: []byte("payload")}
+	var output, diagnostics bytes.Buffer
+	if got := Run([]string{"--events-fd", strconv.FormatUint(uint64(read), 10)}, input, &output, &diagnostics); got != 2 {
+		t.Fatalf("Run() = %d, want 2; diagnostics = %q", got, diagnostics.String())
+	}
+	if input.writeToCalled || output.Len() != 0 {
+		t.Fatal("read-only event pipe processed stdin")
+	}
+}
+
 func TestWindowsEventEmitterDisablesAfterModeChange(t *testing.T) {
 	read, write := newObservationPipe(t)
 	defer read.Close()

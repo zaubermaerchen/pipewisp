@@ -150,10 +150,10 @@ Each hook option is optional and may be specified at most once. `--events-fd`
 selects a caller-owned descriptor `3` or higher for synchronous JSONL lifecycle
 observations. Use `--events-fd FD` or `--events-fd=FD`. On Unix, the descriptor
 must be a writable pipe, FIFO, or socket already configured with `O_NONBLOCK`.
-On Windows, it must be a pipe handle whose `PIPE_NOWAIT` mode can be verified.
+On Windows, it must be a writable pipe handle whose `PIPE_NOWAIT` mode can be verified.
 The caller must maintain that mode while pipewisp runs and drain the consumer.
 Pipewisp validates the descriptor before reading stdin, running hooks, or
-writing events; an unsupported type or mode exits with status `2` and a stderr
+writing events; an unsupported type, mode, or access right exits with status `2` and a stderr
 diagnostic. Pipewisp duplicates the descriptor for its own use, keeps its
 duplicate out of hooks, and never closes or changes the borrowed descriptor's
 mode, status flags, or inheritance setting. Before each event write, it checks
