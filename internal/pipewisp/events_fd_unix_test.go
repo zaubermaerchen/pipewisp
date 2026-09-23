@@ -111,10 +111,11 @@ func TestEventEmitterWriteDoesNotWaitForFullConsumer(t *testing.T) {
 	if _, err := unix.FcntlInt(uintptr(writeFD), unix.F_SETFL, originalFlags); err != nil {
 		t.Fatal(err)
 	}
-	var output, diagnostics bytes.Buffer
+	var output bytes.Buffer
+	diagnostics := newNotifyingDiagnosticWriter()
 	status := make(chan int, 1)
 	go func() {
-		status <- Run([]string{"--events-fd", strconv.Itoa(writeFD)}, strings.NewReader("input"), &output, &diagnostics)
+		status <- Run([]string{"--events-fd", strconv.Itoa(writeFD)}, strings.NewReader("input"), &output, diagnostics)
 	}()
 
 	select {
@@ -128,6 +129,7 @@ func TestEventEmitterWriteDoesNotWaitForFullConsumer(t *testing.T) {
 	if got, want := output.String(), "input"; got != want {
 		t.Fatalf("stdout = %q, want %q", got, want)
 	}
+	diagnostics.waitWarning(t)
 	if got := strings.Count(diagnostics.String(), "events disabled:"); got != 1 {
 		t.Fatalf("diagnostics = %q, want one event warning", diagnostics.String())
 	}
@@ -135,6 +137,54 @@ func TestEventEmitterWriteDoesNotWaitForFullConsumer(t *testing.T) {
 		t.Fatal(err)
 	} else if got&unix.O_NONBLOCK != originalFlags&unix.O_NONBLOCK {
 		t.Fatalf("caller descriptor blocking mode = %#x, want %#x", got&unix.O_NONBLOCK, originalFlags&unix.O_NONBLOCK)
+	}
+}
+
+func TestRunDoesNotWaitForBlockedStderrWarning(t *testing.T) {
+	readEvents, writeEvents := newObservationPipe(t)
+	_ = readEvents.Close()
+	defer writeEvents.Close()
+	readDiagnostics, writeDiagnostics, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer readDiagnostics.Close()
+	defer writeDiagnostics.Close()
+	fd := int(writeDiagnostics.Fd())
+	flags, err := unix.FcntlInt(uintptr(fd), unix.F_GETFL, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := unix.FcntlInt(uintptr(fd), unix.F_SETFL, flags|unix.O_NONBLOCK); err != nil {
+		t.Fatal(err)
+	}
+	for {
+		_, err := unix.Write(fd, make([]byte, 4096))
+		if errors.Is(err, unix.EAGAIN) || errors.Is(err, unix.EWOULDBLOCK) {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := unix.FcntlInt(uintptr(fd), unix.F_SETFL, flags); err != nil {
+		t.Fatal(err)
+	}
+	var output bytes.Buffer
+	status := make(chan int, 1)
+	go func() {
+		status <- Run([]string{"--events-fd", strconv.FormatUint(uint64(testEventFD(t, writeEvents)), 10)}, strings.NewReader("input"), &output, writeDiagnostics)
+	}()
+	select {
+	case got := <-status:
+		if got != 0 {
+			t.Fatalf("Run() status = %d, want 0", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Run() waited for blocked stderr warning")
+	}
+	if got := output.String(); got != "input" {
+		t.Fatalf("stdout = %q, want input", got)
 	}
 }
 
@@ -167,8 +217,8 @@ func TestUnixEventEmitterDisablesAfterModeChangeWithoutChangingBorrowedFlags(t *
 	defer read.Close()
 	defer write.Close()
 	borrowed := int(testEventFD(t, write))
-	var diagnostics bytes.Buffer
-	emitter := newEventEmitter(borrowed, &diagnostics)
+	diagnostics := newNotifyingDiagnosticWriter()
+	emitter := newEventEmitter(borrowed, diagnostics)
 	if emitter == nil {
 		t.Fatal("newEventEmitter() returned nil")
 	}
@@ -178,6 +228,7 @@ func TestUnixEventEmitterDisablesAfterModeChangeWithoutChangingBorrowedFlags(t *
 	}
 	emitter.emit("ready")
 	emitter.emit("shutdown")
+	diagnostics.waitWarning(t)
 	if got := strings.Count(diagnostics.String(), "events disabled:"); got != 1 {
 		t.Fatalf("warnings = %d: %q", got, diagnostics.String())
 	}

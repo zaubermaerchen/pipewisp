@@ -150,15 +150,18 @@ Each hook option is optional and may be specified at most once. `--events-fd`
 selects a caller-owned descriptor `3` or higher for synchronous JSONL lifecycle
 observations. Use `--events-fd FD` or `--events-fd=FD`. On Unix, the descriptor
 must be a writable pipe, FIFO, or socket already configured with `O_NONBLOCK`.
-On Windows, it must be a pipe handle whose `PIPE_NOWAIT` mode can be verified.
+On Windows, it must be a writable pipe handle whose `PIPE_NOWAIT` mode can be verified.
 The caller must maintain that mode while pipewisp runs and drain the consumer.
 Pipewisp validates the descriptor before reading stdin, running hooks, or
-writing events; an unsupported type or mode exits with status `2` and a stderr
+writing events; an unsupported type, mode, or access right exits with status `2` and a stderr
 diagnostic. Pipewisp duplicates the descriptor for its own use, keeps its
 duplicate out of hooks, and never closes or changes the borrowed descriptor's
 mode, status flags, or inheritance setting. Before each event write, it checks
 the mode again. A mode change, write failure, or short write disables further
 events with at most one warning while primary stream processing continues.
+The event-failure warning is attempted asynchronously on stderr, so a blocked
+stderr does not delay primary stream processing for this warning. It may not
+arrive before exit.
 Writes are not retried under backpressure. A short write can leave an
 incomplete final JSONL record.
 
@@ -432,12 +435,13 @@ for humans and simple filtering, but verbose output is not a stable
 machine-readable compatibility interface. Later releases may change its
 fields, order, or vocabulary.
 
-Pipewisp-generated verbose writes are synchronous and best-effort. A write
+Routine pipewisp-generated verbose writes are synchronous and best-effort. A write
 error or short write does not produce a recursive diagnostic or change
 passthrough data, lifecycle decisions, hook policy, or exit status. A slow or
 blocked stderr can nevertheless delay hooks, stream processing, signal
 observation, and later lifecycle snapshots, so verbose mode does not promise
-unchanged timing or throughput.
+unchanged timing or throughput. The asynchronous event-failure warning described
+above does not change this timing behavior of verbose records.
 
 On the normal copy path, verbose mode observes the first non-empty read before
 writing that data so it can report `first-data` at the correct boundary. This

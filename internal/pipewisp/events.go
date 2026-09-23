@@ -84,7 +84,28 @@ func (emitter *eventEmitter) emitRecord(record any) {
 	}
 	if err != nil {
 		emitter.disabled = true
-		reportDiagnostic(emitter.diagnostics, fmt.Errorf("events disabled: %w", err))
+		writer, prefix := emitter.diagnostics, verbosePrefix
+		warning := fmt.Errorf("events disabled: %w", err)
+		fileWriter := false
+		// Only os.File supports concurrent writes here; keep arbitrary writers serialized.
+		switch diagnostics := writer.(type) {
+		case *synchronizedWriter:
+			if _, ok := diagnostics.out.(*os.File); ok {
+				writer = diagnostics.out
+				fileWriter = true
+			}
+		case *verboseReporter:
+			prefix = diagnostics.prefix
+			if _, ok := diagnostics.out.(*os.File); ok {
+				writer = diagnostics.out
+				fileWriter = true
+			}
+		}
+		if fileWriter {
+			go func() { _, _ = fmt.Fprintf(writer, "%s%v\n", prefix, warning) }()
+		} else {
+			go reportDiagnostic(writer, warning)
+		}
 	}
 }
 

@@ -20,7 +20,14 @@ func validateEventDescriptor(fd int) error {
 	if fileType != windows.FILE_TYPE_PIPE {
 		return fmt.Errorf("handle must be a pipe")
 	}
-	return validateEventPipeMode(handle)
+	if err := validateEventPipeMode(handle); err != nil {
+		return err
+	}
+	var writable windows.Handle
+	if err := windows.DuplicateHandle(windows.CurrentProcess(), handle, windows.CurrentProcess(), &writable, windows.FILE_WRITE_DATA, false, 0); err != nil {
+		return fmt.Errorf("event pipe must be writable: %w", err)
+	}
+	return windows.CloseHandle(writable)
 }
 
 func validateEventPipeMode(handle windows.Handle) error {

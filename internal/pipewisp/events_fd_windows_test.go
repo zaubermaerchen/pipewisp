@@ -103,10 +103,11 @@ func TestEventEmitterDoesNotWaitForFullPipeAndRestoresBorrowedMode(t *testing.T)
 	originalMode := windowsEventPipeMode(t, borrowed)
 	fillWindowsEventPipe(t, borrowed, originalMode)
 
-	var output, diagnostics bytes.Buffer
+	var output bytes.Buffer
+	diagnostics := newNotifyingDiagnosticWriter()
 	status := make(chan int, 1)
 	go func() {
-		status <- Run([]string{"--events-fd", strconv.FormatUint(uint64(testEventFD(t, writeEvents)), 10)}, strings.NewReader("input"), &output, &diagnostics)
+		status <- Run([]string{"--events-fd", strconv.FormatUint(uint64(testEventFD(t, writeEvents)), 10)}, strings.NewReader("input"), &output, diagnostics)
 	}()
 
 	select {
@@ -120,6 +121,7 @@ func TestEventEmitterDoesNotWaitForFullPipeAndRestoresBorrowedMode(t *testing.T)
 	if got, want := output.String(), "input"; got != want {
 		t.Fatalf("stdout = %q, want %q", got, want)
 	}
+	diagnostics.waitWarning(t)
 	if got := strings.Count(diagnostics.String(), "events disabled:"); got != 1 {
 		t.Fatalf("diagnostics = %q, want one event warning", diagnostics.String())
 	}
@@ -208,13 +210,36 @@ func TestWindowsEventDescriptorRejectsFileAndBlockingPipeBeforeInput(t *testing.
 	}
 }
 
+func TestWindowsEventDescriptorRejectsReadOnlyNowaitPipeBeforeInput(t *testing.T) {
+	name, err := windows.UTF16PtrFromString(`\\.\pipe\pipewisp-test-` + strconv.Itoa(os.Getpid()) + "-" + strconv.FormatInt(time.Now().UnixNano(), 10))
+	if err != nil {
+		t.Fatal(err)
+	}
+	read, err := windows.CreateNamedPipe(name, windows.PIPE_ACCESS_INBOUND, windows.PIPE_TYPE_BYTE|windows.PIPE_NOWAIT, 1, 4096, 4096, 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer windows.CloseHandle(read)
+	if got := windowsEventPipeMode(t, read); got&windows.PIPE_NOWAIT == 0 {
+		t.Fatalf("read-only pipe mode = %#x, want PIPE_NOWAIT", got)
+	}
+	input := &writerToReader{data: []byte("payload")}
+	var output, diagnostics bytes.Buffer
+	if got := Run([]string{"--events-fd", strconv.FormatUint(uint64(read), 10)}, input, &output, &diagnostics); got != 2 {
+		t.Fatalf("Run() = %d, want 2; diagnostics = %q", got, diagnostics.String())
+	}
+	if input.writeToCalled || output.Len() != 0 {
+		t.Fatal("read-only event pipe processed stdin")
+	}
+}
+
 func TestWindowsEventEmitterDisablesAfterModeChange(t *testing.T) {
 	read, write := newObservationPipe(t)
 	defer read.Close()
 	defer write.Close()
 	borrowed := windows.Handle(testEventFD(t, write))
-	var diagnostics bytes.Buffer
-	emitter := newEventEmitter(int(borrowed), &diagnostics)
+	diagnostics := newNotifyingDiagnosticWriter()
+	emitter := newEventEmitter(int(borrowed), diagnostics)
 	if emitter == nil {
 		t.Fatal("newEventEmitter() returned nil")
 	}
@@ -225,6 +250,7 @@ func TestWindowsEventEmitterDisablesAfterModeChange(t *testing.T) {
 	}
 	emitter.emit("ready")
 	emitter.emit("shutdown")
+	diagnostics.waitWarning(t)
 	if got := strings.Count(diagnostics.String(), "events disabled:"); got != 1 {
 		t.Fatalf("warnings = %d: %q", got, diagnostics.String())
 	}

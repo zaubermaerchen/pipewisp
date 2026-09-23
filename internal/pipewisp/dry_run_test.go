@@ -558,19 +558,21 @@ func TestDryRunContinuesAfterEventWriteFailure(t *testing.T) {
 	_ = readEvents.Close()
 	defer writeEvents.Close()
 
-	var output, diagnostics bytes.Buffer
+	var output bytes.Buffer
+	diagnostics := newNotifyingDiagnosticWriter()
 	status := Run([]string{
 		"--dry-run",
 		"--events-fd", strconv.FormatUint(uint64(testEventFD(t, writeEvents)), 10),
 		"--on-ready", "true",
 		"--on-shutdown", "true",
-	}, strings.NewReader("input"), &output, &diagnostics)
+	}, strings.NewReader("input"), &output, diagnostics)
 	if status != 0 {
 		t.Fatalf("Run() status = %d, want 0; diagnostics = %q", status, diagnostics.String())
 	}
 	if got, want := output.String(), "input"; got != want {
 		t.Fatalf("stdout = %q, want %q", got, want)
 	}
+	diagnostics.waitWarning(t)
 	if got := strings.Count(diagnostics.String(), "events disabled:"); got != 1 {
 		t.Fatalf("diagnostics = %q, want one events warning", diagnostics.String())
 	}

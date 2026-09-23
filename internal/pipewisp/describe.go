@@ -153,7 +153,7 @@ func newDescription() description {
 			},
 			EventFD: streamInterfaceDescription{
 				Role:        "observation",
-				Description: "Optional synchronous JSONL lifecycle observations on a writable nonblocking Unix pipe/FIFO/socket or Windows PIPE_NOWAIT pipe; invalid descriptors exit 2 before processing.",
+				Description: "Optional synchronous JSONL lifecycle observations on a writable nonblocking Unix pipe/FIFO/socket or writable Windows PIPE_NOWAIT pipe; invalid descriptors exit 2 before processing.",
 				Format:      "jsonl",
 				Option:      "--events-fd",
 			},
