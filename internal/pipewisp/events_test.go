@@ -158,13 +158,143 @@ func TestEventEmitterDisablesAfterWriteFailure(t *testing.T) {
 	_ = readEvents.Close()
 	defer writeEvents.Close()
 
-	var diagnostics bytes.Buffer
-	emitter := newEventEmitter(int(testEventFD(t, writeEvents)), &diagnostics)
+	diagnostics := make(chan string, 1)
+	emitter := newEventEmitter(int(testEventFD(t, writeEvents)), &channelDiagnosticWriter{diagnostics})
 	emitter.emit("ready")
 	emitter.emit("shutdown")
-	if got := strings.Count(diagnostics.String(), "events disabled:"); got != 1 {
-		t.Fatalf("diagnostics = %q, want one events warning", diagnostics.String())
+	select {
+	case warning := <-diagnostics:
+		if !strings.Contains(warning, "events disabled:") {
+			t.Fatalf("diagnostics = %q, want events warning", warning)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("event failure warning did not reach diagnostics")
 	}
+	select {
+	case warning := <-diagnostics:
+		t.Fatalf("unexpected second warning: %q", warning)
+	default:
+	}
+}
+
+func TestEventEmitterWarningDoesNotBlockProcessing(t *testing.T) {
+	readEvents, writeEvents := newObservationPipe(t)
+	_ = readEvents.Close()
+	defer writeEvents.Close()
+
+	diagnostics := &blockedDiagnosticWriter{entered: make(chan struct{}), release: make(chan struct{})}
+	defer close(diagnostics.release)
+	emitter := newEventEmitter(int(testEventFD(t, writeEvents)), diagnostics)
+	done := make(chan struct{})
+	go func() {
+		emitter.emit("ready")
+		emitter.emit("shutdown")
+		emitter.close()
+		close(done)
+	}()
+	select {
+	case <-diagnostics.entered:
+	case <-time.After(time.Second):
+		t.Fatal("event failure warning did not reach diagnostics")
+	}
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("event warning blocked event processing or close")
+	}
+}
+
+func TestEventWarningKeepsCustomWriterSerialized(t *testing.T) {
+	readEvents, writeEvents := newObservationPipe(t)
+	_ = readEvents.Close()
+	defer writeEvents.Close()
+
+	raw := &blockedDiagnosticWriter{entered: make(chan struct{}), release: make(chan struct{})}
+	defer close(raw.release)
+	diagnostics := &synchronizedWriter{out: raw}
+	emitter := newEventEmitter(int(testEventFD(t, writeEvents)), diagnostics)
+	emitter.emit("ready")
+	select {
+	case <-raw.entered:
+	case <-time.After(time.Second):
+		t.Fatal("event failure warning did not reach diagnostics")
+	}
+	if diagnostics.mu.TryLock() {
+		diagnostics.mu.Unlock()
+		t.Fatal("custom diagnostic writer was not serialized")
+	}
+}
+
+func TestEventWarningPreservesNamedPrefix(t *testing.T) {
+	readEvents, writeEvents := newObservationPipe(t)
+	_ = readEvents.Close()
+	defer writeEvents.Close()
+
+	output := newNotifyingDiagnosticWriter()
+	emitter := newEventEmitter(int(testEventFD(t, writeEvents)), newNamedVerboseReporter(output, "relay", true))
+	emitter.emit("ready")
+	output.waitWarning(t)
+	if got := output.String(); !strings.HasPrefix(got, "pipewisp[relay]: events disabled:") {
+		t.Fatalf("diagnostics = %q, want named warning prefix", got)
+	}
+}
+
+type channelDiagnosticWriter struct{ warnings chan string }
+
+func (writer *channelDiagnosticWriter) Write(p []byte) (int, error) {
+	writer.warnings <- string(p)
+	return len(p), nil
+}
+
+type blockedDiagnosticWriter struct {
+	entered chan struct{}
+	release chan struct{}
+}
+
+type notifyingDiagnosticWriter struct {
+	mu      sync.Mutex
+	buffer  bytes.Buffer
+	warning chan struct{}
+}
+
+func newNotifyingDiagnosticWriter() *notifyingDiagnosticWriter {
+	return &notifyingDiagnosticWriter{warning: make(chan struct{}, 1)}
+}
+
+func (writer *notifyingDiagnosticWriter) Write(p []byte) (int, error) {
+	writer.mu.Lock()
+	defer writer.mu.Unlock()
+	n, err := writer.buffer.Write(p)
+	if strings.Contains(string(p), "events disabled:") {
+		select {
+		case writer.warning <- struct{}{}:
+		default:
+		}
+	}
+	return n, err
+}
+
+func (writer *notifyingDiagnosticWriter) String() string {
+	writer.mu.Lock()
+	defer writer.mu.Unlock()
+	return writer.buffer.String()
+}
+
+func (writer *notifyingDiagnosticWriter) waitWarning(t *testing.T) {
+	t.Helper()
+	select {
+	case <-writer.warning:
+	case <-time.After(time.Second):
+		t.Fatal("event failure warning did not reach diagnostics")
+	}
+}
+
+func (writer *blockedDiagnosticWriter) Write(p []byte) (int, error) {
+	if strings.Contains(string(p), "events disabled:") {
+		close(writer.entered)
+		<-writer.release
+	}
+	return len(p), nil
 }
 
 func TestEventEmitterDoesNotCloseBorrowedFD(t *testing.T) {
@@ -183,80 +313,6 @@ func TestEventEmitterDoesNotCloseBorrowedFD(t *testing.T) {
 	runtime.GC()
 	if _, err := eventsFile.Stat(); err != nil {
 		t.Fatalf("borrowed fd was closed: %v", err)
-	}
-}
-
-func TestEventsWarningSharesDiagnosticSynchronizerWithAsyncHooks(t *testing.T) {
-	readEvents, writeEvents := newObservationPipe(t)
-	defer readEvents.Close()
-	defer writeEvents.Close()
-
-	eventRecords := make(chan lifecycleEventRecord, 8)
-	go func() {
-		decoder := json.NewDecoder(readEvents)
-		for {
-			var record lifecycleEventRecord
-			if err := decoder.Decode(&record); err != nil {
-				return
-			}
-			eventRecords <- record
-		}
-	}()
-
-	diagnostics := &diagnosticOverlapWriter{
-		entered: make(chan string, 4),
-		release: make(chan struct{}),
-	}
-	input := &gatedReader{first: []byte("a"), second: []byte("b"), secondReady: make(chan struct{})}
-	status := make(chan int, 1)
-	go func() {
-		status <- Run([]string{
-			"--events-fd", strconv.FormatUint(uint64(testEventFD(t, writeEvents)), 10),
-			"--idle", "5ms",
-			"--on-idle.async", delayedFailingHookCommand(200 * time.Millisecond),
-		}, input, io.Discard, diagnostics)
-	}()
-
-	for _, want := range []string{"ready", "first-data", "idle"} {
-		select {
-		case record := <-eventRecords:
-			if record.Event != want {
-				t.Fatalf("event = %q, want %q", record.Event, want)
-			}
-		case <-time.After(time.Second):
-			t.Fatalf("timed out waiting for %s event", want)
-		}
-	}
-	_ = readEvents.Close()
-	close(input.secondReady)
-
-	select {
-	case kind := <-diagnostics.entered:
-		if kind != "warning" {
-			t.Fatalf("first blocked diagnostic = %q, want warning", kind)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("event failure warning did not reach diagnostics")
-	}
-
-	overlapped := false
-	select {
-	case kind := <-diagnostics.entered:
-		overlapped = kind == "async"
-	case <-time.After(300 * time.Millisecond):
-	}
-	close(diagnostics.release)
-
-	select {
-	case got := <-status:
-		if got != 0 {
-			t.Fatalf("Run() status = %d, want 0", got)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("Run() did not finish")
-	}
-	if overlapped {
-		t.Fatal("async hook diagnostics overlapped event failure warning")
 	}
 }
 
@@ -322,20 +378,6 @@ func TestEventsWarningSharesDiagnosticSynchronizerWithSyncHookOutput(t *testing.
 	}
 }
 
-func delayedFailingHookCommand(duration time.Duration) string {
-	if os.PathSeparator == '\\' {
-		return hookSleepCommand(duration) + " & exit /b 7"
-	}
-	return hookSleepCommand(duration) + "; exit 7"
-}
-
-type diagnosticOverlapWriter struct {
-	entered chan string
-	release chan struct{}
-	active  atomic.Int32
-	output  bytes.Buffer
-}
-
 type diagnosticConcurrencyWriter struct {
 	warningEntered chan struct{}
 	hookOutputSeen chan struct{}
@@ -364,26 +406,6 @@ func (writer *diagnosticConcurrencyWriter) Write(p []byte) (int, error) {
 		}
 	}
 	return len(p), nil
-}
-
-func (writer *diagnosticOverlapWriter) Write(p []byte) (int, error) {
-	text := string(p)
-	kind := ""
-	if strings.Contains(text, "events disabled") {
-		kind = "warning"
-	} else if strings.Contains(text, "on-idle hook failed") {
-		kind = "async"
-	}
-	if kind != "" {
-		writer.active.Add(1)
-		writer.entered <- kind
-		<-writer.release
-	}
-	n, err := writer.output.Write(p)
-	if kind != "" {
-		writer.active.Add(-1)
-	}
-	return n, err
 }
 
 func rawEventFD(t *testing.T, file *os.File) uintptr {

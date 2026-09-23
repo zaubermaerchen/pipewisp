@@ -103,10 +103,11 @@ func TestEventEmitterDoesNotWaitForFullPipeAndRestoresBorrowedMode(t *testing.T)
 	originalMode := windowsEventPipeMode(t, borrowed)
 	fillWindowsEventPipe(t, borrowed, originalMode)
 
-	var output, diagnostics bytes.Buffer
+	var output bytes.Buffer
+	diagnostics := newNotifyingDiagnosticWriter()
 	status := make(chan int, 1)
 	go func() {
-		status <- Run([]string{"--events-fd", strconv.FormatUint(uint64(testEventFD(t, writeEvents)), 10)}, strings.NewReader("input"), &output, &diagnostics)
+		status <- Run([]string{"--events-fd", strconv.FormatUint(uint64(testEventFD(t, writeEvents)), 10)}, strings.NewReader("input"), &output, diagnostics)
 	}()
 
 	select {
@@ -120,6 +121,7 @@ func TestEventEmitterDoesNotWaitForFullPipeAndRestoresBorrowedMode(t *testing.T)
 	if got, want := output.String(), "input"; got != want {
 		t.Fatalf("stdout = %q, want %q", got, want)
 	}
+	diagnostics.waitWarning(t)
 	if got := strings.Count(diagnostics.String(), "events disabled:"); got != 1 {
 		t.Fatalf("diagnostics = %q, want one event warning", diagnostics.String())
 	}
@@ -236,8 +238,8 @@ func TestWindowsEventEmitterDisablesAfterModeChange(t *testing.T) {
 	defer read.Close()
 	defer write.Close()
 	borrowed := windows.Handle(testEventFD(t, write))
-	var diagnostics bytes.Buffer
-	emitter := newEventEmitter(int(borrowed), &diagnostics)
+	diagnostics := newNotifyingDiagnosticWriter()
+	emitter := newEventEmitter(int(borrowed), diagnostics)
 	if emitter == nil {
 		t.Fatal("newEventEmitter() returned nil")
 	}
@@ -248,6 +250,7 @@ func TestWindowsEventEmitterDisablesAfterModeChange(t *testing.T) {
 	}
 	emitter.emit("ready")
 	emitter.emit("shutdown")
+	diagnostics.waitWarning(t)
 	if got := strings.Count(diagnostics.String(), "events disabled:"); got != 1 {
 		t.Fatalf("warnings = %d: %q", got, diagnostics.String())
 	}
