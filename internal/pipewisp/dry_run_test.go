@@ -98,19 +98,12 @@ func TestDryRunEscapesMultilineDiagnosticCommand(t *testing.T) {
 }
 
 func TestRunEventsFDEmitsSideEffectRecords(t *testing.T) {
-	eventsFile, err := os.CreateTemp("", "pipewisp-dry-run-events-")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() {
-		_ = eventsFile.Close()
-		_ = os.Remove(eventsFile.Name())
-	}()
+	eventsFile, eventsWrite, finishEvents := newEventCapture(t)
 
 	command := hookOutputCommand("ready")
 	var output, diagnostics bytes.Buffer
 	status := Run([]string{
-		"--events-fd", stringFD(eventsFile),
+		"--events-fd", strconv.FormatUint(uint64(testEventFD(t, eventsWrite)), 10),
 		"--on-ready", command,
 		"--on-shutdown", "true",
 	}, strings.NewReader(""), &output, &diagnostics)
@@ -118,6 +111,7 @@ func TestRunEventsFDEmitsSideEffectRecords(t *testing.T) {
 		t.Fatalf("Run() status = %d, want 0; diagnostics = %q", status, diagnostics.String())
 	}
 
+	finishEvents()
 	records := decodeDryRunEventRecords(t, eventsFile)
 	if got, want := len(records), 4; got != want {
 		t.Fatalf("event count = %d, want %d: %#v", got, want, records)
@@ -146,20 +140,13 @@ func TestRunEventsFDEmitsSideEffectRecords(t *testing.T) {
 }
 
 func TestRunEventsFDDryRunSideEffectRecords(t *testing.T) {
-	eventsFile, err := os.CreateTemp("", "pipewisp-dry-run-events-")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() {
-		_ = eventsFile.Close()
-		_ = os.Remove(eventsFile.Name())
-	}()
+	eventsFile, eventsWrite, finishEvents := newEventCapture(t)
 
 	command := `printf 'not-run'`
 	var output, diagnostics bytes.Buffer
 	status := Run([]string{
 		"--dry-run",
-		"--events-fd", stringFD(eventsFile),
+		"--events-fd", strconv.FormatUint(uint64(testEventFD(t, eventsWrite)), 10),
 		"--on-ready", command,
 		"--on-first-data", "true",
 		"--on-shutdown", "true",
@@ -177,6 +164,7 @@ func TestRunEventsFDDryRunSideEffectRecords(t *testing.T) {
 		t.Fatalf("diagnostics = %q, want %q", got, wantDiagnostics)
 	}
 
+	finishEvents()
 	records := decodeDryRunEventRecords(t, eventsFile)
 	if got, want := len(records), 6; got != want {
 		t.Fatalf("event count = %d, want %d: %#v", got, want, records)
@@ -199,17 +187,10 @@ func TestRunEventsFDDryRunSideEffectRecords(t *testing.T) {
 }
 
 func TestAsyncHookEmitsNormalSideEffectRecord(t *testing.T) {
-	eventsFile, err := os.CreateTemp("", "pipewisp-async-events-")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() {
-		_ = eventsFile.Close()
-		_ = os.Remove(eventsFile.Name())
-	}()
+	eventsFile, eventsWrite, finishEvents := newEventCapture(t)
 
 	var diagnostics bytes.Buffer
-	emitter := newEventEmitter(int(eventsFile.Fd()), &diagnostics)
+	emitter := newEventEmitter(int(testEventFD(t, eventsWrite)), &diagnostics)
 	if emitter == nil {
 		t.Fatal("newEventEmitter() returned nil")
 	}
@@ -219,6 +200,7 @@ func TestAsyncHookEmitsNormalSideEffectRecord(t *testing.T) {
 	manager.stopAndWait()
 	emitter.close()
 
+	finishEvents()
 	records := decodeDryRunEventRecords(t, eventsFile)
 	if got, want := len(records), 1; got != want {
 		t.Fatalf("event count = %d, want %d: %#v", got, want, records)
@@ -262,21 +244,15 @@ func TestSideEffectRemainsExecutedForHookOutcomes(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			eventsFile, err := os.CreateTemp("", "pipewisp-outcome-events-")
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer func() {
-				_ = eventsFile.Close()
-				_ = os.Remove(eventsFile.Name())
-			}()
+			eventsFile, eventsWrite, finishEvents := newEventCapture(t)
 
-			args := []string{"--events-fd", stringFD(eventsFile), "--on-ready", test.command}
+			args := []string{"--events-fd", strconv.FormatUint(uint64(testEventFD(t, eventsWrite)), 10), "--on-ready", test.command}
 			args = append(args, test.args...)
 			var output, diagnostics bytes.Buffer
 			if status := Run(args, strings.NewReader(""), &output, &diagnostics); status != test.wantStatus {
 				t.Fatalf("Run() status = %d, want %d; diagnostics = %q", status, test.wantStatus, diagnostics.String())
 			}
+			finishEvents()
 			records := decodeDryRunEventRecords(t, eventsFile)
 			var sideEffect map[string]json.RawMessage
 			for _, record := range records {
@@ -299,19 +275,13 @@ func TestSideEffectRemainsExecutedForHookOutcomes(t *testing.T) {
 }
 
 func TestVerboseHookStartIsWrittenBeforeSyncHookStarts(t *testing.T) {
-	eventsFile, err := os.CreateTemp("", "pipewisp-sync-verbose-events-")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() {
-		_ = eventsFile.Close()
-		_ = os.Remove(eventsFile.Name())
-	}()
+	_, eventsWrite, finishEvents := newEventCapture(t)
+	defer finishEvents()
 
 	var output, diagnostics bytes.Buffer
 	status := Run([]string{
 		"--verbose",
-		"--events-fd", stringFD(eventsFile),
+		"--events-fd", strconv.FormatUint(uint64(testEventFD(t, eventsWrite)), 10),
 		"--on-ready", hookOutputCommand("sync-hook-output"),
 	}, strings.NewReader(""), &output, &diagnostics)
 	if status != 0 {
@@ -321,19 +291,13 @@ func TestVerboseHookStartIsWrittenBeforeSyncHookStarts(t *testing.T) {
 }
 
 func TestVerboseHookStartIsWrittenBeforeAsyncHookStarts(t *testing.T) {
-	eventsFile, err := os.CreateTemp("", "pipewisp-async-verbose-events-")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() {
-		_ = eventsFile.Close()
-		_ = os.Remove(eventsFile.Name())
-	}()
+	_, eventsWrite, finishEvents := newEventCapture(t)
+	defer finishEvents()
 
 	var diagnostics bytes.Buffer
 	diagnosticEvents := make(chan string, 16)
 	diagnosticOutput := io.MultiWriter(&diagnostics, &eventChannelWriter{label: "diagnostics", events: diagnosticEvents})
-	emitter := newEventEmitter(int(eventsFile.Fd()), diagnosticOutput)
+	emitter := newEventEmitter(int(testEventFD(t, eventsWrite)), diagnosticOutput)
 	if emitter == nil {
 		t.Fatal("newEventEmitter() returned nil")
 	}
@@ -426,17 +390,11 @@ func TestHookDirectlyForwardsLargeOutputWithEventsFD(t *testing.T) {
 	}
 	const chunkSize = 128 * 1024
 	command := "dd if=/dev/zero bs=" + strconv.Itoa(chunkSize) + " count=1 2>/dev/null; dd if=/dev/zero bs=" + strconv.Itoa(chunkSize) + " count=1 1>&2 2>/dev/null"
-	eventsFile, err := os.CreateTemp("", "pipewisp-large-hook-events-")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() {
-		_ = eventsFile.Close()
-		_ = os.Remove(eventsFile.Name())
-	}()
+	_, eventsWrite, finishEvents := newEventCapture(t)
+	defer finishEvents()
 
 	var output, diagnostics bytes.Buffer
-	if status := Run([]string{"--events-fd", stringFD(eventsFile), "--on-ready", command}, strings.NewReader(""), &output, &diagnostics); status != 0 {
+	if status := Run([]string{"--events-fd", strconv.FormatUint(uint64(testEventFD(t, eventsWrite)), 10), "--on-ready", command}, strings.NewReader(""), &output, &diagnostics); status != 0 {
 		t.Fatalf("Run() status = %d, want 0; diagnostics length = %d", status, diagnostics.Len())
 	}
 	if got, want := diagnostics.Len(), 2*chunkSize; got != want {
@@ -445,10 +403,7 @@ func TestHookDirectlyForwardsLargeOutputWithEventsFD(t *testing.T) {
 }
 
 func TestDryRunSuppressesAsyncHooksAndPreservesIdleLifecycle(t *testing.T) {
-	readEvents, writeEvents, err := os.Pipe()
-	if err != nil {
-		t.Fatal(err)
-	}
+	readEvents, writeEvents := newObservationPipe(t)
 	defer readEvents.Close()
 
 	records := make(chan map[string]json.RawMessage, 16)
@@ -473,7 +428,7 @@ func TestDryRunSuppressesAsyncHooksAndPreservesIdleLifecycle(t *testing.T) {
 	go func() {
 		status <- Run([]string{
 			"--dry-run",
-			"--events-fd", stringFD(writeEvents),
+			"--events-fd", strconv.FormatUint(uint64(testEventFD(t, writeEvents)), 10),
 			"--idle", "5ms",
 			"--on-idle.async", command,
 		}, input, &output, &diagnostics)
@@ -599,17 +554,14 @@ func TestDryRunSuppressesSyncIdleAndResumeHooks(t *testing.T) {
 }
 
 func TestDryRunContinuesAfterEventWriteFailure(t *testing.T) {
-	readEvents, writeEvents, err := os.Pipe()
-	if err != nil {
-		t.Fatal(err)
-	}
+	readEvents, writeEvents := newObservationPipe(t)
 	_ = readEvents.Close()
 	defer writeEvents.Close()
 
 	var output, diagnostics bytes.Buffer
 	status := Run([]string{
 		"--dry-run",
-		"--events-fd", stringFD(writeEvents),
+		"--events-fd", strconv.FormatUint(uint64(testEventFD(t, writeEvents)), 10),
 		"--on-ready", "true",
 		"--on-shutdown", "true",
 	}, strings.NewReader("input"), &output, &diagnostics)
@@ -625,10 +577,6 @@ func TestDryRunContinuesAfterEventWriteFailure(t *testing.T) {
 	if got := strings.Count(diagnostics.String(), "[DRY RUN]"); got != 2 {
 		t.Fatalf("diagnostics = %q, want both dry-run reports", diagnostics.String())
 	}
-}
-
-func stringFD(file *os.File) string {
-	return strconv.FormatUint(uint64(file.Fd()), 10)
 }
 
 func decodeDryRunEventRecords(t *testing.T, file *os.File) []map[string]json.RawMessage {

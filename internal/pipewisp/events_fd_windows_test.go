@@ -19,22 +19,17 @@ import (
 )
 
 func TestEventEmitterDoesNotPassOwnedHandleToHooks(t *testing.T) {
-	eventsFile, err := os.CreateTemp("", "pipewisp-events-")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() {
-		_ = eventsFile.Close()
-		_ = os.Remove(eventsFile.Name())
-	}()
+	readEvents, writeEvents := newObservationPipe(t)
+	defer readEvents.Close()
+	defer writeEvents.Close()
 
-	original := windows.Handle(eventsFile.Fd())
+	original := windows.Handle(testEventFD(t, writeEvents))
 	if err := windows.SetHandleInformation(original, windows.HANDLE_FLAG_INHERIT, windows.HANDLE_FLAG_INHERIT); err != nil {
 		t.Fatal(err)
 	}
 
 	var diagnostics bytes.Buffer
-	emitter := newEventEmitter(int(eventsFile.Fd()), &diagnostics)
+	emitter := newEventEmitter(int(testEventFD(t, writeEvents)), &diagnostics)
 	if emitter == nil {
 		t.Fatal("newEventEmitter() returned nil")
 	}
@@ -55,22 +50,17 @@ func TestEventEmitterDoesNotPassOwnedHandleToHooks(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if flags&windows.HANDLE_FLAG_INHERIT != 0 {
-		t.Fatalf("borrowed event handle is inheritable: flags %#x", flags)
+	if flags&windows.HANDLE_FLAG_INHERIT == 0 {
+		t.Fatalf("borrowed event handle lost inheritance: flags %#x", flags)
 	}
 }
 
 func TestEventEmitterClosesOnlyOwnedHandle(t *testing.T) {
-	eventsFile, err := os.CreateTemp("", "pipewisp-events-")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() {
-		_ = eventsFile.Close()
-		_ = os.Remove(eventsFile.Name())
-	}()
+	readEvents, writeEvents := newObservationPipe(t)
+	defer readEvents.Close()
+	defer writeEvents.Close()
 
-	original := windows.Handle(eventsFile.Fd())
+	original := windows.Handle(testEventFD(t, writeEvents))
 	emitter := newEventEmitter(int(original), &bytes.Buffer{})
 	if emitter == nil {
 		t.Fatal("newEventEmitter() returned nil")
@@ -81,22 +71,19 @@ func TestEventEmitterClosesOnlyOwnedHandle(t *testing.T) {
 	if _, err := windowsEventHandleFlags(owned); err == nil || err != windows.ERROR_INVALID_HANDLE {
 		t.Fatalf("owned handle error = %v, want ERROR_INVALID_HANDLE", err)
 	}
-	if _, err := eventsFile.Stat(); err != nil {
+	if _, err := writeEvents.Stat(); err != nil {
 		t.Fatalf("closing emitter closed caller handle: %v", err)
 	}
 }
 
 func TestEventEmitterPreservesBorrowedPipeModeOnInitialization(t *testing.T) {
-	readEvents, writeEvents, err := os.Pipe()
-	if err != nil {
-		t.Fatal(err)
-	}
+	readEvents, writeEvents := newObservationPipe(t)
 	defer readEvents.Close()
 	defer writeEvents.Close()
 
-	borrowed := windows.Handle(writeEvents.Fd())
+	borrowed := windows.Handle(testEventFD(t, writeEvents))
 	originalMode := windowsEventPipeMode(t, borrowed)
-	emitter := newEventEmitter(int(writeEvents.Fd()), io.Discard)
+	emitter := newEventEmitter(int(testEventFD(t, writeEvents)), io.Discard)
 	if emitter == nil {
 		t.Fatal("newEventEmitter() returned nil")
 	}
@@ -108,21 +95,18 @@ func TestEventEmitterPreservesBorrowedPipeModeOnInitialization(t *testing.T) {
 }
 
 func TestEventEmitterDoesNotWaitForFullPipeAndRestoresBorrowedMode(t *testing.T) {
-	readEvents, writeEvents, err := os.Pipe()
-	if err != nil {
-		t.Fatal(err)
-	}
+	readEvents, writeEvents := newObservationPipe(t)
 	defer readEvents.Close()
 	defer writeEvents.Close()
 
-	borrowed := windows.Handle(writeEvents.Fd())
+	borrowed := windows.Handle(testEventFD(t, writeEvents))
 	originalMode := windowsEventPipeMode(t, borrowed)
 	fillWindowsEventPipe(t, borrowed, originalMode)
 
 	var output, diagnostics bytes.Buffer
 	status := make(chan int, 1)
 	go func() {
-		status <- Run([]string{"--events-fd", strconv.FormatUint(uint64(writeEvents.Fd()), 10)}, strings.NewReader("input"), &output, &diagnostics)
+		status <- Run([]string{"--events-fd", strconv.FormatUint(uint64(testEventFD(t, writeEvents)), 10)}, strings.NewReader("input"), &output, &diagnostics)
 	}()
 
 	select {
@@ -197,4 +181,54 @@ func windowsEventHandleFlags(handle windows.Handle) (uint32, error) {
 		return 0, err
 	}
 	return flags, nil
+}
+
+func TestWindowsEventDescriptorRejectsFileAndBlockingPipeBeforeInput(t *testing.T) {
+	regular, err := os.CreateTemp(t.TempDir(), "events-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer regular.Close()
+	read, write := newObservationPipe(t)
+	defer read.Close()
+	defer write.Close()
+	mode := uint32(windows.PIPE_WAIT)
+	if err := windows.SetNamedPipeHandleState(windows.Handle(write.Fd()), &mode, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	for _, file := range []*os.File{regular, write} {
+		input := &writerToReader{data: []byte("payload")}
+		var output, diagnostics bytes.Buffer
+		if got := Run([]string{"--events-fd", strconv.FormatUint(uint64(file.Fd()), 10)}, input, &output, &diagnostics); got != 2 {
+			t.Fatalf("Run(%v) = %d, want 2; diagnostics = %q", file.Name(), got, diagnostics.String())
+		}
+		if input.writeToCalled || output.Len() != 0 {
+			t.Fatal("invalid event descriptor processed stdin")
+		}
+	}
+}
+
+func TestWindowsEventEmitterDisablesAfterModeChange(t *testing.T) {
+	read, write := newObservationPipe(t)
+	defer read.Close()
+	defer write.Close()
+	borrowed := windows.Handle(testEventFD(t, write))
+	var diagnostics bytes.Buffer
+	emitter := newEventEmitter(int(borrowed), &diagnostics)
+	if emitter == nil {
+		t.Fatal("newEventEmitter() returned nil")
+	}
+	defer emitter.close()
+	mode := uint32(windows.PIPE_WAIT)
+	if err := windows.SetNamedPipeHandleState(borrowed, &mode, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	emitter.emit("ready")
+	emitter.emit("shutdown")
+	if got := strings.Count(diagnostics.String(), "events disabled:"); got != 1 {
+		t.Fatalf("warnings = %d: %q", got, diagnostics.String())
+	}
+	if got := windowsEventPipeMode(t, borrowed); got&windows.PIPE_NOWAIT != 0 {
+		t.Fatal("borrowed mode changed")
+	}
 }

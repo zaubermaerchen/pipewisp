@@ -20,17 +20,10 @@ import (
 )
 
 func TestRunEventsFDEmitsLifecycleEventsWithoutHooks(t *testing.T) {
-	eventsFile, err := os.CreateTemp("", "pipewisp-events-")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() {
-		_ = eventsFile.Close()
-		_ = os.Remove(eventsFile.Name())
-	}()
+	eventsFile, eventsWrite, finishEvents := newEventCapture(t)
 
 	var output, diagnostics bytes.Buffer
-	fdArg := fmt.Sprintf("--events-fd=%d", eventsFile.Fd())
+	fdArg := fmt.Sprintf("--events-fd=%d", testEventFD(t, eventsWrite))
 	if status := Run([]string{fdArg}, strings.NewReader("input"), &output, &diagnostics); status != 0 {
 		t.Fatalf("Run() status = %d, want 0; diagnostics = %q", status, diagnostics.String())
 	}
@@ -41,9 +34,7 @@ func TestRunEventsFDEmitsLifecycleEventsWithoutHooks(t *testing.T) {
 		t.Fatalf("diagnostics = %q, want empty", diagnostics.String())
 	}
 
-	if _, err := eventsFile.Seek(0, 0); err != nil {
-		t.Fatal(err)
-	}
+	finishEvents()
 	var records []map[string]string
 	decoder := json.NewDecoder(eventsFile)
 	for {
@@ -79,25 +70,22 @@ func TestRunEventsFDInvalidDescriptorContinuesPipeline(t *testing.T) {
 	var output, diagnostics bytes.Buffer
 
 	invalidFD := strconv.Itoa(int(^uint(0) >> 1))
-	if status := Run([]string{"--events-fd", invalidFD}, source, &output, &diagnostics); status != 0 {
-		t.Fatalf("Run() status = %d, want 0; diagnostics = %q", status, diagnostics.String())
+	if status := Run([]string{"--events-fd", invalidFD}, source, &output, &diagnostics); status != 2 {
+		t.Fatalf("Run() status = %d, want 2; diagnostics = %q", status, diagnostics.String())
 	}
-	if !bytes.Equal(output.Bytes(), input) {
-		t.Fatalf("stdout = %x, want %x", output.Bytes(), input)
+	if output.Len() != 0 {
+		t.Fatalf("stdout = %x, want empty", output.Bytes())
 	}
-	if got := strings.Count(diagnostics.String(), "events disabled:"); got != 1 {
+	if got := strings.Count(diagnostics.String(), "invalid --events-fd"); got != 1 {
 		t.Fatalf("diagnostics = %q, want one events warning", diagnostics.String())
 	}
-	if !source.writeToCalled {
-		t.Fatal("invalid events fd disabled source WriterTo fast path")
+	if source.writeToCalled {
+		t.Fatal("invalid events fd read stdin")
 	}
 }
 
 func TestRunEventsFDEnablesIdleLifecycleEventsWithoutHooks(t *testing.T) {
-	readEvents, writeEvents, err := os.Pipe()
-	if err != nil {
-		t.Fatal(err)
-	}
+	readEvents, writeEvents := newObservationPipe(t)
 	defer readEvents.Close()
 
 	records := make(chan lifecycleEventRecord, 16)
@@ -119,7 +107,7 @@ func TestRunEventsFDEnablesIdleLifecycleEventsWithoutHooks(t *testing.T) {
 	status := make(chan int, 1)
 	go func() {
 		status <- Run([]string{
-			"--events-fd", strconv.FormatUint(uint64(writeEvents.Fd()), 10),
+			"--events-fd", strconv.FormatUint(uint64(testEventFD(t, writeEvents)), 10),
 			"--idle", "5ms",
 		}, input, &output, &diagnostics)
 	}()
@@ -166,15 +154,12 @@ func TestRunEventsFDEnablesIdleLifecycleEventsWithoutHooks(t *testing.T) {
 }
 
 func TestEventEmitterDisablesAfterWriteFailure(t *testing.T) {
-	readEvents, writeEvents, err := os.Pipe()
-	if err != nil {
-		t.Fatal(err)
-	}
+	readEvents, writeEvents := newObservationPipe(t)
 	_ = readEvents.Close()
 	defer writeEvents.Close()
 
 	var diagnostics bytes.Buffer
-	emitter := newEventEmitter(int(writeEvents.Fd()), &diagnostics)
+	emitter := newEventEmitter(int(testEventFD(t, writeEvents)), &diagnostics)
 	emitter.emit("ready")
 	emitter.emit("shutdown")
 	if got := strings.Count(diagnostics.String(), "events disabled:"); got != 1 {
@@ -202,10 +187,7 @@ func TestEventEmitterDoesNotCloseBorrowedFD(t *testing.T) {
 }
 
 func TestEventsWarningSharesDiagnosticSynchronizerWithAsyncHooks(t *testing.T) {
-	readEvents, writeEvents, err := os.Pipe()
-	if err != nil {
-		t.Fatal(err)
-	}
+	readEvents, writeEvents := newObservationPipe(t)
 	defer readEvents.Close()
 	defer writeEvents.Close()
 
@@ -229,7 +211,7 @@ func TestEventsWarningSharesDiagnosticSynchronizerWithAsyncHooks(t *testing.T) {
 	status := make(chan int, 1)
 	go func() {
 		status <- Run([]string{
-			"--events-fd", strconv.FormatUint(uint64(writeEvents.Fd()), 10),
+			"--events-fd", strconv.FormatUint(uint64(testEventFD(t, writeEvents)), 10),
 			"--idle", "5ms",
 			"--on-idle.async", delayedFailingHookCommand(200 * time.Millisecond),
 		}, input, io.Discard, diagnostics)
@@ -282,10 +264,7 @@ func TestEventsWarningSharesDiagnosticSynchronizerWithSyncHookOutput(t *testing.
 	if runtime.GOOS == "windows" {
 		t.Skip("the large POSIX hook output makes the overlap deterministic")
 	}
-	readEvents, writeEvents, err := os.Pipe()
-	if err != nil {
-		t.Fatal(err)
-	}
+	readEvents, writeEvents := newObservationPipe(t)
 	defer writeEvents.Close()
 
 	diagnostics := &diagnosticConcurrencyWriter{
@@ -298,7 +277,7 @@ func TestEventsWarningSharesDiagnosticSynchronizerWithSyncHookOutput(t *testing.
 	status := make(chan int, 1)
 	go func() {
 		status <- Run([]string{
-			"--events-fd", strconv.FormatUint(uint64(writeEvents.Fd()), 10),
+			"--events-fd", strconv.FormatUint(uint64(testEventFD(t, writeEvents)), 10),
 			"--on-ready", command,
 		}, strings.NewReader(""), io.Discard, diagnostics)
 	}()

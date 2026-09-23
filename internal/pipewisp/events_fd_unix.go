@@ -7,53 +7,59 @@ package pipewisp
 import (
 	"fmt"
 	"os"
+	"syscall"
 
 	"golang.org/x/sys/unix"
 )
 
-func setEventDescriptorNonInheritable(fd int) error {
-	flags, err := unix.FcntlInt(uintptr(fd), unix.F_GETFD, 0)
+func validateEventDescriptor(fd int) error {
+	flags, err := unix.FcntlInt(uintptr(fd), unix.F_GETFL, 0)
 	if err != nil {
 		return err
 	}
-	_, err = unix.FcntlInt(uintptr(fd), unix.F_SETFD, flags|unix.FD_CLOEXEC)
+	if flags&unix.O_ACCMODE == unix.O_RDONLY {
+		return fmt.Errorf("descriptor is not writable")
+	}
+	if flags&unix.O_NONBLOCK == 0 {
+		return fmt.Errorf("descriptor must have O_NONBLOCK set")
+	}
+	var stat unix.Stat_t
+	if err := unix.Fstat(fd, &stat); err != nil {
+		return err
+	}
+	switch stat.Mode & unix.S_IFMT {
+	case unix.S_IFIFO, unix.S_IFSOCK:
+		return nil
+	default:
+		return fmt.Errorf("descriptor must be a pipe, FIFO, or socket")
+	}
+}
+
+func setEventDescriptorNonInheritable(fd int) error {
+	_, err := unix.FcntlInt(uintptr(fd), unix.F_SETFD, unix.FD_CLOEXEC)
 	return err
 }
 
 func duplicateEventFile(fd int) (*os.File, error) {
-	// dup shares the open-file description with the caller. Save its status
-	// flags before wrapping the duplicate because os.NewFile may make a pipe
-	// nonblocking while registering it with the runtime poller.
-	originalFlags, err := unix.FcntlInt(uintptr(fd), unix.F_GETFL, 0)
-	if err != nil {
-		return nil, err
-	}
+	// Dup creates an inheritable descriptor. Hold ForkLock until CLOEXEC is set
+	// so a concurrent hook spawn cannot inherit the temporary descriptor.
+	syscall.ForkLock.RLock()
 	ownedFD, err := unix.Dup(fd)
-	if err != nil {
-		return nil, err
-	}
-	closeOwnedFD := true
-	defer func() {
-		if closeOwnedFD {
+	if err == nil {
+		err = setEventDescriptorNonInheritable(ownedFD)
+		if err != nil {
 			_ = unix.Close(ownedFD)
 		}
-	}()
-
-	// Hooks are started with the normal exec descriptor set. CLOEXEC keeps the
-	// event stream private to pipewisp while the caller retains ownership.
-	if err := setEventDescriptorNonInheritable(ownedFD); err != nil {
+	}
+	syscall.ForkLock.RUnlock()
+	if err != nil {
 		return nil, err
 	}
 	file := os.NewFile(uintptr(ownedFD), "pipewisp events")
 	if file == nil {
+		_ = unix.Close(ownedFD)
 		return nil, fmt.Errorf("invalid duplicated file descriptor %d", ownedFD)
 	}
-	if _, err := unix.FcntlInt(uintptr(ownedFD), unix.F_SETFL, originalFlags); err != nil {
-		closeOwnedFD = false
-		_ = file.Close()
-		return nil, fmt.Errorf("restore event descriptor flags: %w", err)
-	}
-	closeOwnedFD = false
 	return file, nil
 }
 
@@ -71,19 +77,12 @@ func writeEvent(file *os.File, data []byte) (int, error) {
 			writeErr = err
 			return
 		}
-		// dup shares the open-file description with the caller. Toggle the
-		// shared status flag only for this raw write, then restore it before
-		// returning so the caller's descriptor keeps its original mode.
-		if _, err := unix.FcntlInt(uintptr(fd), unix.F_SETFL, flags|unix.O_NONBLOCK); err != nil {
-			writeErr = err
+		if flags&unix.O_NONBLOCK == 0 {
+			writeErr = fmt.Errorf("event descriptor no longer has O_NONBLOCK set")
 			return
 		}
 		n, writeErr = unix.Write(fd, data)
-		if _, restoreErr := unix.FcntlInt(uintptr(fd), unix.F_SETFL, flags); restoreErr != nil {
-			if writeErr == nil {
-				writeErr = restoreErr
-			}
-		}
+
 	}); err != nil {
 		return 0, err
 	}
