@@ -1,2 +1,4 @@
+github.com/zaubermaerchen/khsier v0.0.0-20261002001018-c238c9ae10be h1:UK0lw0RAWIrkkfykSXklVHlv+CEKJgxSPKWXFGDYDiM=
+github.com/zaubermaerchen/khsier v0.0.0-20261002001018-c238c9ae10be/go.mod h1:Ib3sV+zv3GFyzYSPfsSomELj0FzfH/pGLNE6Ws3PmyE=
 golang.org/x/sys v0.29.0 h1:TPYlXGxvx1MGTn2GiZDhnjPA9wZzZeGKHHmKhHYvgaU=
 golang.org/x/sys v0.29.0/go.mod h1:/VUhepiaJMQUp4+oa/7Zr1D23ma6VTLIYjOOTFZPUcA=
