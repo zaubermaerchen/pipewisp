@@ -23,6 +23,7 @@ type idleObservedStream struct {
 	tracker             *signalTracker
 	firstDataHookFailed bool
 	readErr             error
+	writeErr            error
 }
 
 func (stream *idleObservedStream) Read(data []byte) (int, error) {
@@ -53,6 +54,7 @@ func (stream *idleObservedStream) Write(data []byte) (int, error) {
 	}
 	select {
 	case err := <-stream.writer.results:
+		stream.writeErr = err
 		if err != nil {
 			return 0, err
 		}
@@ -68,6 +70,18 @@ func (stream *idleObservedStream) Write(data []byte) (int, error) {
 	case <-stream.writer.stop:
 		return 0, errIdleStopped
 	}
+}
+
+// Observe guarantees errors.Is matching; its wrapping must not change pipewisp's
+// diagnostic text. A write failure takes precedence over an accompanying read error.
+func (stream *idleObservedStream) copyError(err error) error {
+	if stream.writeErr != nil && errors.Is(err, stream.writeErr) {
+		return stream.writeErr
+	}
+	if stream.readErr != nil && errors.Is(err, stream.readErr) {
+		return stream.readErr
+	}
+	return err
 }
 
 type idleWritePump struct {
@@ -230,7 +244,7 @@ func runIdleCopyWithAsyncManager(opts options, in io.Reader, out io.Writer, diag
 			if sig := runner.pollSignal(); sig != nil {
 				runner.abortForSignal(sig)
 			} else if !errors.Is(err, errIdleStopped) {
-				runner.done.copyErr = err
+				runner.done.copyErr = stream.copyError(err)
 			}
 			return runner.done
 		}

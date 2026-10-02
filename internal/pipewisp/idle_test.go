@@ -5,6 +5,7 @@ package pipewisp
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"strings"
@@ -1104,5 +1105,57 @@ func TestIdleIgnoredFirstDataHookFailureContinuesCopy(t *testing.T) {
 	}
 	if !strings.Contains(diagnostics.String(), "on-first-data hook failed") {
 		t.Fatalf("diagnostics = %q, want ignored hook failure", diagnostics.String())
+	}
+}
+
+func TestIdleObservedStreamRestoresIODiagnostics(t *testing.T) {
+	readErr, writeErr := errors.New("original read error"), errors.New("original write error")
+	unrelated := errors.New("observer error")
+	tests := []struct {
+		name           string
+		stream         idleObservedStream
+		observed, want error
+	}{
+		{"read", idleObservedStream{readErr: readErr}, fmt.Errorf("observer read: %w", readErr), readErr},
+		{"write", idleObservedStream{writeErr: writeErr}, fmt.Errorf("observer write: %w", writeErr), writeErr},
+		{"write precedes read", idleObservedStream{readErr: readErr, writeErr: writeErr}, errors.Join(readErr, writeErr), writeErr},
+		{"unrelated", idleObservedStream{readErr: readErr, writeErr: writeErr}, unrelated, unrelated},
+		{"no recorded errors", idleObservedStream{}, unrelated, unrelated},
+		{"nil", idleObservedStream{readErr: readErr}, nil, nil},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got := test.stream.copyError(test.observed)
+			if got != test.want {
+				t.Errorf("copy error = %v, want original %v", got, test.want)
+			}
+			if got == nil {
+				return
+			}
+			var diagnostics bytes.Buffer
+			reportCopyError(&diagnostics, got)
+			expected := "pipewisp: " + test.want.Error() + "\n"
+			if diagnostics.String() != expected {
+				t.Fatalf("diagnostics = %q, want %q", diagnostics.String(), expected)
+			}
+		})
+	}
+}
+
+func TestIdleObservedStreamRecordsPartialWriteError(t *testing.T) {
+	wantErr := errors.New("original output error")
+	output := &partialErrorWriter{max: 2, err: wantErr}
+	state := newLifecycleState()
+	pump := newIdleWritePump(state.writer(output))
+	defer pump.stopWriting()
+	stream := idleObservedStream{writer: pump, tracker: &signalTracker{}}
+	if _, err := stream.Write([]byte("input")); err != wantErr {
+		t.Fatalf("write error = %v, want %v", err, wantErr)
+	}
+	if stream.writeErr != wantErr {
+		t.Fatalf("recorded write error = %v, want %v", stream.writeErr, wantErr)
+	}
+	if output.output.String() != "in" || state.bytes.Load() != 2 {
+		t.Fatalf("output = %q, bytes = %d", output.output.String(), state.bytes.Load())
 	}
 }
