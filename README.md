@@ -53,7 +53,7 @@ flow and signals, rather than a strict model of Unix pipes.
 
 | Tool | Role |
 | --- | --- |
-| [`khsier`](https://github.com/zaubermaerchen/pipewisp/blob/main/docs/khsier.md) (in this repository) | Observe flow and lifecycle transitions |
+| [`khsier`](https://github.com/zaubermaerchen/khsier) | Observe flow and lifecycle transitions |
 | [`pipewisp`](https://github.com/zaubermaerchen/pipewisp) | React to lifecycle transitions |
 | [`dam`](https://github.com/zaubermaerchen/dam) | Hold flow until release conditions are satisfied |
 | [`outage`](https://github.com/zaubermaerchen/outage) | Cut flow when a condition is triggered |
@@ -66,15 +66,19 @@ From a checkout:
 ```sh
 go install ./cmd/pipewisp
 go build -o pipewisp ./cmd/pipewisp
-go install ./cmd/khsier
-go build -o khsier ./cmd/khsier
 ```
 
 The module can also be installed directly once published:
 
 ```sh
 go install github.com/zaubermaerchen/pipewisp/cmd/pipewisp@latest
-go install github.com/zaubermaerchen/pipewisp/cmd/khsier@latest
+```
+
+`khsier` is no longer bundled with pipewisp. It is maintained and documented
+in its [own repository](https://github.com/zaubermaerchen/khsier). Install it separately:
+
+```sh
+go install github.com/zaubermaerchen/khsier/cmd/khsier@latest
 ```
 
 ## Download releases
@@ -109,9 +113,7 @@ $actual = (Get-FileHash -Algorithm SHA256 $archive).Hash.ToLowerInvariant()
 if ($actual -ne $expected) { throw "checksum mismatch: $archive" }
 ```
 
-Each release archive contains both `pipewisp` and `khsier` binaries built with
-the same release version. `khsier` is the minimal stream-boundary observer;
-see the [khsier reference](docs/khsier.md) for its event and idle semantics.
+Each release archive contains the `pipewisp` binary, `LICENSE`, and `README.md`.
 
 ## Lifecycle
 
