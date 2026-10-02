@@ -1,6 +1,6 @@
 package pipewisp
 
-// This file coordinates one-at-a-time reads and idle/resume transitions.
+// This file adapts idle observation to pipewisp hooks, interruption, and writes.
 
 import (
 	"errors"
@@ -8,82 +8,80 @@ import (
 	"io"
 	"os"
 	"sync"
-	"time"
+
+	"github.com/zaubermaerchen/khsier"
 )
 
-const idleReadBufferSize = 32 * 1024
+// Observe has no cancellation or callback-error API. These guards stop new I/O
+// after interruption or a failed first-data hook without closing borrowed input
+// on ordinary completion. A blocked Read may outlive the run, as before.
+var errIdleStopped = errors.New("idle observation stopped")
 
-type idleReadResult struct {
-	data []byte
-	err  error
+type idleObservedStream struct {
+	in                  io.Reader
+	writer              *idleWritePump
+	tracker             *signalTracker
+	firstDataHookFailed bool
+	readErr             error
+	writeErr            error
 }
 
-type idleReadPump struct {
-	in          io.Reader
-	requests    chan struct{}
-	readStarted chan struct{}
-	results     chan idleReadResult
-	stop        chan struct{}
-	stopOnce    sync.Once
-}
-
-func newIdleReadPump(in io.Reader) *idleReadPump {
-	pump := &idleReadPump{
-		in:          in,
-		requests:    make(chan struct{}, 1),
-		readStarted: make(chan struct{}),
-		// The pump waits for a request before every Read, so this slot can
-		// hold only the current result and never provides read-ahead.
-		results: make(chan idleReadResult, 1),
-		stop:    make(chan struct{}),
-	}
-	go pump.read()
-	return pump
-}
-
-func (pump *idleReadPump) read() {
-	buffer := make([]byte, idleReadBufferSize)
-	for {
-		select {
-		case <-pump.requests:
-		case <-pump.stop:
-			return
-		}
-
-		// Keep the pump from entering Read until the coordinator has observed
-		// the handshake and started the active timer for this read.
-		select {
-		case pump.readStarted <- struct{}{}:
-		case <-pump.stop:
-			return
-		}
-		n, err := pump.in.Read(buffer)
-		result := idleReadResult{data: buffer[:n], err: err}
-		select {
-		case pump.results <- result:
-		case <-pump.stop:
-			return
-		}
-		if err != nil {
-			return
-		}
-	}
-}
-
-func (pump *idleReadPump) request() {
+func (stream *idleObservedStream) Read(data []byte) (int, error) {
 	select {
-	case pump.requests <- struct{}{}:
-	case <-pump.stop:
+	case <-stream.writer.stop:
+		return 0, errIdleStopped
+	default:
+	}
+	if stream.tracker.poll() != nil {
+		return 0, errIdleStopped
+	}
+	n, err := stream.in.Read(data)
+	stream.readErr = err
+	return n, err
+}
+
+func (stream *idleObservedStream) Write(data []byte) (int, error) {
+	if stream.tracker.poll() != nil {
+		return 0, errIdleStopped
+	}
+	select {
+	case <-stream.writer.stop:
+		return 0, errIdleStopped
+	default:
+	}
+	if !stream.writer.request(data) {
+		return 0, errIdleStopped
+	}
+	select {
+	case err := <-stream.writer.results:
+		stream.writeErr = err
+		if err != nil {
+			return 0, err
+		}
+		if stream.firstDataHookFailed {
+			// Preserve an independent error returned with the first chunk, while
+			// stopping Observe before another read or idle window can begin.
+			if stream.readErr != nil && !errors.Is(stream.readErr, io.EOF) {
+				return len(data), stream.readErr
+			}
+			return len(data), errIdleStopped
+		}
+		return len(data), nil
+	case <-stream.writer.stop:
+		return 0, errIdleStopped
 	}
 }
 
-func (pump *idleReadPump) stopReading(closeReader bool) {
-	pump.stopOnce.Do(func() {
-		if closeReader {
-			closeInput(pump.in)
-		}
-		close(pump.stop)
-	})
+// Observe guarantees errors.Is matching; its wrapping must not change pipewisp's
+// diagnostic text. A write failure takes precedence over an accompanying read error.
+func (stream *idleObservedStream) copyError(err error) error {
+	if stream.writeErr != nil && errors.Is(err, stream.writeErr) {
+		return stream.writeErr
+	}
+	if stream.readErr != nil && errors.Is(err, stream.readErr) {
+		return stream.readErr
+	}
+	return err
 }
 
 type idleWritePump struct {
@@ -157,23 +155,14 @@ func (pump *idleWritePump) stopWriting() {
 }
 
 type idleCopyRunner struct {
-	opts          options
-	diagnostics   io.Writer
-	tracker       *signalTracker
-	state         *lifecycleState
-	pump          *idleReadPump
-	writePump     *idleWritePump
-	timer         *time.Timer
-	timerC        <-chan time.Time
-	active        bool
-	idle          bool
-	requested     bool
-	writeDone     <-chan error
-	pendingErr    error
-	firstDataSeen bool
-	eventContext  hookContext
-	asyncHooks    *asyncHookManager
-	done          completion
+	opts         options
+	diagnostics  io.Writer
+	tracker      *signalTracker
+	state        *lifecycleState
+	stream       *idleObservedStream
+	eventContext hookContext
+	asyncHooks   *asyncHookManager
+	done         completion
 }
 
 func runIdleCopy(opts options, in io.Reader, out io.Writer, diagnostics io.Writer, tracker *signalTracker) completion {
@@ -204,211 +193,123 @@ func runIdleCopyWithAsyncManager(opts options, in io.Reader, out io.Writer, diag
 	if asyncHooks.reporter == nil {
 		diagnostics = asyncHooks.diagnostics
 	}
+	writer := newIdleWritePump(out)
+	defer writer.stopWriting()
+	stream := &idleObservedStream{in: in, writer: writer, tracker: tracker}
 	runner := &idleCopyRunner{
-		opts:        opts,
-		diagnostics: diagnostics,
-		tracker:     tracker,
-		state:       state,
-		pump:        newIdleReadPump(in),
-		writePump:   newIdleWritePump(out),
-		timer:       time.NewTimer(opts.idle),
-		asyncHooks:  asyncHooks,
+		opts: opts, diagnostics: diagnostics, tracker: tracker, state: state,
+		stream: stream, asyncHooks: asyncHooks,
 	}
-	runner.stopTimer()
-	defer func() {
-		runner.stopTimer()
-		runner.pump.stopReading(false)
-		runner.writePump.stopWriting()
-	}()
-
 	if sig := runner.pollSignal(); sig != nil {
 		runner.abortForSignal(sig)
 		return runner.done
 	}
-	runner.requestRead()
-
+	events := make(chan khsier.Event)
+	handled := make(chan struct{})
+	copyDone := make(chan error, 1)
+	go func() {
+		copyDone <- khsier.Observe(stream, stream, khsier.Options{Idle: opts.idle}, func(event khsier.Event) {
+			// Keep lifecycle state and hook execution on the coordinator. Observe must
+			// wait until the transition finishes before forwarding its pending chunk.
+			select {
+			case events <- event:
+			case <-writer.stop:
+				return
+			}
+			select {
+			case <-handled:
+			case <-writer.stop:
+			}
+		})
+	}()
 	for {
 		select {
 		case sig := <-tracker.signals:
 			if sig == nil {
 				continue
 			}
-			runner.rememberSignal(sig)
+			tracker.remember(sig)
 			runner.abortForSignal(tracker.firstSignal())
 			return runner.done
-		case <-runner.pump.readStarted:
-			if !runner.handleReadStarted() {
+		case event := <-events:
+			if sig := runner.pollSignal(); sig != nil {
+				runner.abortForSignal(sig)
 				return runner.done
 			}
-		case result := <-runner.pump.results:
-			if !runner.handleRead(result) {
+			if !runner.handleEvent(event) {
 				return runner.done
 			}
-		case err := <-runner.writeDone:
-			if !runner.handleWriteDone(err) {
-				return runner.done
+			handled <- struct{}{}
+		case err := <-copyDone:
+			if sig := runner.pollSignal(); sig != nil {
+				runner.abortForSignal(sig)
+			} else if !errors.Is(err, errIdleStopped) {
+				runner.done.copyErr = stream.copyError(err)
 			}
-		case <-runner.timerC:
-			runner.timerC = nil
-			// A result already published by the pump is an observed read and
-			// must be handled before declaring the stream idle. In particular,
-			// this preserves an observed EOF over a timer ready at the same time.
-			select {
-			case result := <-runner.pump.results:
-				if !runner.handleRead(result) {
-					return runner.done
-				}
-				if len(result.data) == 0 && result.err == nil {
-					if !runner.handleIdle() {
-						return runner.done
-					}
-				}
-			default:
-				if !runner.handleIdle() {
-					return runner.done
-				}
-			}
+			return runner.done
 		}
 	}
 }
 
-func (runner *idleCopyRunner) requestRead() {
-	runner.pump.request()
-	runner.requested = true
-}
-
-func (runner *idleCopyRunner) handleReadStarted() bool {
-	if sig := runner.pollSignal(); sig != nil {
-		runner.abortForSignal(sig)
-		return false
-	}
-	if runner.requested && runner.active && !runner.idle && runner.timerC == nil {
-		runner.startTimer()
-	}
-	return true
-}
-
-func (runner *idleCopyRunner) handleRead(result idleReadResult) bool {
-	runner.requested = false
-	if sig := runner.pollSignal(); sig != nil {
-		runner.abortForSignal(sig)
-		return false
-	}
-
-	if len(result.data) > 0 {
-		firstDataPending := runner.opts.onFirstDataSet && !runner.firstDataSeen
-		if !runner.firstDataSeen {
-			runner.firstDataSeen = true
-			if runner.opts.verbose || runner.state.events != nil {
-				runner.eventContext = runner.state.snapshot("first-data", "")
-				if runner.opts.verbose {
-					reporter := verboseForWriter(runner.diagnostics)
-					if reporter != nil {
-						reporter.event(runner.eventContext)
-					}
-				}
-				if runner.state.events != nil {
-					runner.state.emit(runner.eventContext.event)
+func (runner *idleCopyRunner) handleEvent(event khsier.Event) bool {
+	switch event.Kind {
+	case khsier.EventBOS:
+		if runner.opts.verbose || runner.state.events != nil {
+			runner.eventContext = runner.state.snapshot("first-data", "")
+			if runner.opts.verbose {
+				if reporter := verboseForWriter(runner.diagnostics); reporter != nil {
+					reporter.event(runner.eventContext)
 				}
 			}
+			if runner.state.events != nil {
+				runner.state.emit(runner.eventContext.event)
+			}
 		}
-		if firstDataPending {
-			// Run this before any resume hook so the initial data transition is
-			// always first-data -> write. A failure still permits this chunk to
-			// be written, but prevents all subsequent reads.
+		if runner.opts.onFirstDataSet {
 			if !runner.handleFirstData() {
 				return false
 			}
+			runner.stream.firstDataHookFailed = runner.done.firstDataHookFailed
 		}
-		if runner.idle && !firstDataPending {
-			var resumeContext hookContext
-			if runner.opts.verbose || runner.state.events != nil {
-				resumeContext = runner.state.snapshot("resume", "")
-				if runner.opts.verbose {
-					reporter := verboseForWriter(runner.diagnostics)
-					if reporter != nil {
-						reporter.event(resumeContext)
-					}
-				}
-				if runner.state.events != nil {
-					runner.state.emit(resumeContext.event)
+	case khsier.EventIdle:
+		return runner.handleIdle()
+	case khsier.EventResume:
+		var resumeContext hookContext
+		if runner.opts.verbose || runner.state.events != nil {
+			resumeContext = runner.state.snapshot("resume", "")
+			if runner.opts.verbose {
+				if reporter := verboseForWriter(runner.diagnostics); reporter != nil {
+					reporter.event(resumeContext)
 				}
 			}
-			// A resume hook is part of the transition into active mode. A
-			// failed hook does not roll back the transition or discard data.
-			if runner.opts.onResumeAsyncSet {
-				resumeContext = hookContextForInvocation(runner.state, "resume", resumeContext, runner.opts.verbose)
-				runner.asyncHooks.start("on-resume", runner.opts.onResumeAsync, resumeContext, runner.opts.hookTimeout)
-			} else if runner.opts.onResumeSet {
-				if sig := runner.pollSignal(); sig != nil {
-					runner.abortForSignal(sig)
-					return false
-				}
-				resumeContext = hookContextForInvocation(runner.state, "resume", resumeContext, runner.opts.verbose)
-				if err := runHookWithContextAndTrackerAndSideEffect("on-resume", runner.opts.onResume, resumeContext, runner.diagnostics, runner.opts.hookTimeout, runner.tracker, runner.opts.ignoreHookErrors, runner.state.events, runner.opts.dryRun); err != nil {
-					runner.done.resumeErr = err
-				}
+			if runner.state.events != nil {
+				runner.state.emit(resumeContext.event)
 			}
+		}
+		if runner.opts.onResumeAsyncSet {
+			resumeContext = hookContextForInvocation(runner.state, "resume", resumeContext, runner.opts.verbose)
+			runner.asyncHooks.start("on-resume", runner.opts.onResumeAsync, resumeContext, runner.opts.hookTimeout)
+		} else if runner.opts.onResumeSet {
 			if sig := runner.pollSignal(); sig != nil {
 				runner.abortForSignal(sig)
 				return false
 			}
-			runner.idle = false
-		}
-
-		runner.stopTimer()
-		runner.pendingErr = result.err
-		runner.writeDone = runner.writePump.results
-		if !runner.writePump.request(result.data) {
-			runner.writeDone = nil
-			if sig := runner.pollSignal(); sig != nil {
-				runner.abortForSignal(sig)
-			} else {
-				runner.stopAfterCopyError()
+			resumeContext = hookContextForInvocation(runner.state, "resume", resumeContext, runner.opts.verbose)
+			if err := runHookWithContextAndTrackerAndSideEffect("on-resume", runner.opts.onResume, resumeContext, runner.diagnostics, runner.opts.hookTimeout, runner.tracker, runner.opts.ignoreHookErrors, runner.state.events, runner.opts.dryRun); err != nil {
+				runner.done.resumeErr = err
 			}
+		}
+		if sig := runner.pollSignal(); sig != nil {
+			runner.abortForSignal(sig)
 			return false
 		}
-		return true
-	} else if result.err != nil {
-		runner.recordReadError(result.err)
-		runner.stopAfterCopyError()
-		return false
 	}
-
-	runner.requestRead()
-	return true
-}
-
-func (runner *idleCopyRunner) handleWriteDone(err error) bool {
-	runner.writeDone = nil
-	if sig := runner.pollSignal(); sig != nil {
-		runner.abortForSignal(sig)
-		return false
-	}
-	if err != nil {
-		runner.done.copyErr = err
-		runner.stopAfterCopyError()
-		return false
-	}
-	if runner.pendingErr != nil {
-		runner.recordReadError(runner.pendingErr)
-		runner.stopAfterCopyError()
-		return false
-	}
-	if runner.done.firstDataHookFailed {
-		// The chunk that triggered the first-data hook was already written, but
-		// no later read is allowed after a hook failure.
-		runner.stopAfterCopyError()
-		return false
-	}
-	runner.pendingErr = nil
-	runner.active = true
-	runner.requestRead()
+	// EOS is internal observation only; pipewisp selects its shutdown transition
+	// from completion after Observe returns.
 	return true
 }
 
 func (runner *idleCopyRunner) handleFirstData() bool {
-	runner.firstDataSeen = true
 	if sig := runner.pollSignal(); sig != nil {
 		runner.abortForSignal(sig)
 		return false
@@ -429,8 +330,6 @@ func (runner *idleCopyRunner) handleIdle() bool {
 		runner.abortForSignal(sig)
 		return false
 	}
-	runner.active = false
-	runner.idle = true
 	var idleContext hookContext
 	if runner.opts.verbose || runner.state.events != nil {
 		idleContext = runner.state.snapshot("idle", "")
@@ -461,47 +360,7 @@ func (runner *idleCopyRunner) handleIdle() bool {
 		runner.abortForSignal(sig)
 		return false
 	}
-	if !runner.requested {
-		runner.requestRead()
-	}
 	return true
-}
-
-func (runner *idleCopyRunner) startTimer() {
-	if !runner.active || runner.idle || runner.timerC != nil {
-		return
-	}
-	runner.timer.Reset(runner.opts.idle)
-	runner.timerC = runner.timer.C
-}
-
-func (runner *idleCopyRunner) stopTimer() {
-	if runner.timer == nil {
-		return
-	}
-	if !runner.timer.Stop() {
-		select {
-		case <-runner.timer.C:
-		default:
-		}
-	}
-	runner.timerC = nil
-}
-
-func (runner *idleCopyRunner) recordReadError(err error) {
-	if !errors.Is(err, io.EOF) {
-		runner.done.copyErr = err
-	}
-}
-
-func (runner *idleCopyRunner) stopAfterCopyError() {
-	runner.stopTimer()
-	runner.pump.stopReading(false)
-	runner.writePump.stopWriting()
-}
-
-func (runner *idleCopyRunner) rememberSignal(sig os.Signal) {
-	runner.tracker.remember(sig)
 }
 
 func (runner *idleCopyRunner) pollSignal() os.Signal {
@@ -510,9 +369,8 @@ func (runner *idleCopyRunner) pollSignal() os.Signal {
 
 func (runner *idleCopyRunner) abortForSignal(sig os.Signal) {
 	runner.done.signal = sig
-	runner.stopTimer()
-	runner.pump.stopReading(true)
-	runner.writePump.stopWriting()
+	runner.stream.writer.stopWriting()
+	closeInput(runner.stream.in)
 }
 
 func writeIdleChunk(out io.Writer, data []byte) error {

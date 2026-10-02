@@ -4,6 +4,8 @@ package pipewisp
 
 import (
 	"bytes"
+	"errors"
+	"fmt"
 	"io"
 	"os"
 	"strings"
@@ -375,53 +377,46 @@ func TestIdleSignalReturnsWhileStdoutWriteBlocked(t *testing.T) {
 	}
 }
 
-func TestIdleReadPumpSignalsReadStart(t *testing.T) {
-	reader := &blockingReadStartReader{
-		called:  make(chan struct{}),
-		release: make(chan struct{}),
-	}
-	pump := newIdleReadPump(reader)
-	defer pump.stopReading(false)
-	pump.request()
+func TestIdleInputReadStartsAndCompletes(t *testing.T) {
+	reader := &blockingReadStartReader{called: make(chan struct{}), release: make(chan struct{})}
+	released := false
+	defer func() {
+		if !released {
+			close(reader.release)
+		}
+	}()
+	done := make(chan completion, 1)
+	go func() {
+		done <- runIdleCopy(options{idle: time.Hour}, reader, io.Discard, io.Discard, &signalTracker{})
+	}()
 	select {
-	case <-pump.readStarted:
+	case <-reader.called:
 	case <-time.After(time.Second):
-		t.Fatal("read pump did not publish read start")
+		t.Fatal("input read did not start")
 	}
 	close(reader.release)
+	released = true
 	select {
-	case result := <-pump.results:
-		if result.err != io.EOF {
-			t.Fatalf("read result error = %v, want EOF", result.err)
+	case result := <-done:
+		if result.copyErr != nil {
+			t.Fatalf("copy error = %v", result.copyErr)
 		}
 	case <-time.After(time.Second):
-		t.Fatal("read pump did not publish read result")
+		t.Fatal("input EOF did not complete copy")
 	}
 }
 
-func TestIdleReadPumpReusesReadBuffer(t *testing.T) {
+func TestIdleCopyReusesReadBuffer(t *testing.T) {
 	reader := &recordingReader{remaining: 2}
-	pump := newIdleReadPump(reader)
-	defer pump.stopReading(false)
-
-	for i := 0; i < 2; i++ {
-		pump.request()
-		select {
-		case <-pump.readStarted:
-		case <-time.After(time.Second):
-			t.Fatal("read pump did not publish read start")
-		}
-		select {
-		case <-pump.results:
-		case <-time.After(time.Second):
-			t.Fatal("read pump did not publish read result")
-		}
+	done := runIdleCopy(options{idle: time.Hour}, reader, io.Discard, io.Discard, &signalTracker{})
+	if done.copyErr != nil {
+		t.Fatalf("copy error = %v", done.copyErr)
 	}
 	if len(reader.buffers) != 2 {
 		t.Fatalf("read calls = %d, want 2", len(reader.buffers))
 	}
 	if &reader.buffers[0][0] != &reader.buffers[1][0] {
-		t.Fatal("read pump allocated a new buffer for the second read")
+		t.Fatal("copy allocated a new buffer for the second read")
 	}
 }
 
@@ -1045,4 +1040,122 @@ func (w *oneByteWriter) Write(p []byte) (int, error) {
 	}
 	_, _ = w.output.Write(p[:1])
 	return 1, nil
+}
+
+func TestIdleDataAndReadErrorPreservesCompletion(t *testing.T) {
+	for name, failHook := range map[string]bool{"successful-hook": false, "failing-hook": true} {
+		t.Run(name, func(t *testing.T) {
+			wantErr := errors.New("input unavailable")
+			input := &dataAndErrorReader{data: []byte("input"), err: wantErr}
+			var output, diagnostics bytes.Buffer
+			config := options{idle: time.Hour, idleSet: true, onFirstDataSet: true, onFirstData: hookOutputCommand("first")}
+			if failHook {
+				config.onFirstData = failingHookCommand("first")
+			}
+			state := newLifecycleState()
+			done := runIdleCopyWithState(config, input, state.writer(&output), &diagnostics, &signalTracker{}, state)
+			if !errors.Is(done.copyErr, wantErr) || completionReason(done) != "io-error" || done.firstDataHookFailed != failHook {
+				t.Fatalf("completion = %#v, reason = %q", done, completionReason(done))
+			}
+			if output.String() != "input" || state.bytes.Load() != 5 {
+				t.Fatalf("output = %q, bytes = %d", output.String(), state.bytes.Load())
+			}
+		})
+	}
+}
+
+func TestIdlePartialWriteErrorPreservesCompletionAndBytes(t *testing.T) {
+	wantErr := errors.New("output unavailable")
+	output := &partialErrorWriter{max: 2, err: wantErr}
+	state := newLifecycleState()
+	config := options{idle: time.Hour, idleSet: true}
+	done := runIdleCopyWithState(config, strings.NewReader("input"), state.writer(output), io.Discard, &signalTracker{}, state)
+	if !errors.Is(done.copyErr, wantErr) || completionReason(done) != "io-error" {
+		t.Fatalf("completion = %#v", done)
+	}
+	if output.output.String() != "in" || state.bytes.Load() != 2 {
+		t.Fatalf("output = %q, bytes = %d", output.output.String(), state.bytes.Load())
+	}
+}
+
+func TestIdleFirstDataFailureDoesNotObserveAnotherIdleWindow(t *testing.T) {
+	for i := 0; i < 100; i++ {
+		input := &shortReadReader{chunks: [][]byte{[]byte("first"), []byte("later")}}
+		config := options{idle: time.Nanosecond, idleSet: true, onFirstDataSet: true, onFirstData: failingHookCommand("first"), onIdleSet: true, onIdle: failingHookCommand("idle")}
+		done := runIdleCopy(config, input, io.Discard, io.Discard, &signalTracker{})
+		if !done.firstDataHookFailed || done.idleErr != nil || input.index != 1 {
+			t.Fatalf("iteration %d: completion = %#v, reads = %d", i, done, input.index)
+		}
+	}
+}
+
+func TestIdleIgnoredFirstDataHookFailureContinuesCopy(t *testing.T) {
+	input := &shortReadReader{chunks: [][]byte{[]byte("first"), []byte("later")}}
+	var output, diagnostics bytes.Buffer
+	config := options{
+		idle: time.Hour, idleSet: true,
+		onFirstData: failingHookCommand("first-data"), onFirstDataSet: true,
+		ignoreHookErrors: true,
+	}
+	if status := runWithOptions(config, input, &output, &diagnostics); status != 0 {
+		t.Fatalf("exit code = %d, want 0; diagnostics = %q", status, diagnostics.String())
+	}
+	if output.String() != "firstlater" || input.index != 2 {
+		t.Fatalf("output = %q, reads = %d", output.String(), input.index)
+	}
+	if !strings.Contains(diagnostics.String(), "on-first-data hook failed") {
+		t.Fatalf("diagnostics = %q, want ignored hook failure", diagnostics.String())
+	}
+}
+
+func TestIdleObservedStreamRestoresIODiagnostics(t *testing.T) {
+	readErr, writeErr := errors.New("original read error"), errors.New("original write error")
+	unrelated := errors.New("observer error")
+	tests := []struct {
+		name           string
+		stream         idleObservedStream
+		observed, want error
+	}{
+		{"read", idleObservedStream{readErr: readErr}, fmt.Errorf("observer read: %w", readErr), readErr},
+		{"write", idleObservedStream{writeErr: writeErr}, fmt.Errorf("observer write: %w", writeErr), writeErr},
+		{"write precedes read", idleObservedStream{readErr: readErr, writeErr: writeErr}, errors.Join(readErr, writeErr), writeErr},
+		{"unrelated", idleObservedStream{readErr: readErr, writeErr: writeErr}, unrelated, unrelated},
+		{"no recorded errors", idleObservedStream{}, unrelated, unrelated},
+		{"nil", idleObservedStream{readErr: readErr}, nil, nil},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got := test.stream.copyError(test.observed)
+			if got != test.want {
+				t.Errorf("copy error = %v, want original %v", got, test.want)
+			}
+			if got == nil {
+				return
+			}
+			var diagnostics bytes.Buffer
+			reportCopyError(&diagnostics, got)
+			expected := "pipewisp: " + test.want.Error() + "\n"
+			if diagnostics.String() != expected {
+				t.Fatalf("diagnostics = %q, want %q", diagnostics.String(), expected)
+			}
+		})
+	}
+}
+
+func TestIdleObservedStreamRecordsPartialWriteError(t *testing.T) {
+	wantErr := errors.New("original output error")
+	output := &partialErrorWriter{max: 2, err: wantErr}
+	state := newLifecycleState()
+	pump := newIdleWritePump(state.writer(output))
+	defer pump.stopWriting()
+	stream := idleObservedStream{writer: pump, tracker: &signalTracker{}}
+	if _, err := stream.Write([]byte("input")); err != wantErr {
+		t.Fatalf("write error = %v, want %v", err, wantErr)
+	}
+	if stream.writeErr != wantErr {
+		t.Fatalf("recorded write error = %v, want %v", stream.writeErr, wantErr)
+	}
+	if output.output.String() != "in" || state.bytes.Load() != 2 {
+		t.Fatalf("output = %q, bytes = %d", output.output.String(), state.bytes.Load())
+	}
 }
