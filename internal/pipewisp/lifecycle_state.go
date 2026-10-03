@@ -48,6 +48,9 @@ type countingWriter struct {
 	state *lifecycleState
 }
 
+// io.Copy must pass through Write so snapshots include completed writes even
+// while the input remains open. Delegating to the underlying ReaderFrom would
+// defer counting until it returns.
 func (writer *countingWriter) Write(p []byte) (int, error) {
 	n, err := writer.out.Write(p)
 	// A Writer contract violation is reported by the caller. Do not expose an
@@ -56,31 +59,4 @@ func (writer *countingWriter) Write(p []byte) (int, error) {
 		writer.state.bytes.Add(int64(n))
 	}
 	return n, err
-}
-
-func (writer *countingWriter) ReadFrom(src io.Reader) (int64, error) {
-	if readerFrom, ok := writer.out.(io.ReaderFrom); ok {
-		n, err := readerFrom.ReadFrom(src)
-		if n >= 0 {
-			writer.state.bytes.Add(n)
-		}
-		return n, err
-	}
-
-	// Hide this wrapper's ReaderFrom method so io.Copy cannot call back into
-	// this method. The returned count covers all writes made by the fallback,
-	// allowing one atomic update without double-counting individual Write calls.
-	n, err := io.Copy(writerOnly{out: writer.out}, src)
-	if n >= 0 {
-		writer.state.bytes.Add(n)
-	}
-	return n, err
-}
-
-type writerOnly struct {
-	out io.Writer
-}
-
-func (writer writerOnly) Write(p []byte) (int, error) {
-	return writer.out.Write(p)
 }

@@ -236,7 +236,7 @@ func TestCountingWriterCountsPartialSuccessfulWrites(t *testing.T) {
 	}
 }
 
-func TestCountingWriterReadFromDelegatesAndCountsOnce(t *testing.T) {
+func TestCountingWriterCopyUsesWriteAndCountsOnce(t *testing.T) {
 	state := newLifecycleState()
 	underlying := &readerFromWriter{}
 	writer := state.writer(underlying)
@@ -248,7 +248,7 @@ func TestCountingWriterReadFromDelegatesAndCountsOnce(t *testing.T) {
 	if got, want := n, int64(len("reader-from")); got != want {
 		t.Fatalf("io.Copy() bytes = %d, want %d", got, want)
 	}
-	if got, want := underlying.readFromCalls, 1; got != want {
+	if got, want := underlying.readFromCalls, 0; got != want {
 		t.Fatalf("underlying ReadFrom calls = %d, want %d", got, want)
 	}
 	if got, want := state.bytes.Load(), int64(len("reader-from")); got != want {
@@ -259,7 +259,7 @@ func TestCountingWriterReadFromDelegatesAndCountsOnce(t *testing.T) {
 	}
 }
 
-func TestCountingWriterReadFromFallbackCountsOnce(t *testing.T) {
+func TestCountingWriterCopyToWriteOnlyOutputCountsOnce(t *testing.T) {
 	state := newLifecycleState()
 	underlying := &writeOnlyBuffer{}
 	writer := state.writer(underlying)
@@ -276,6 +276,37 @@ func TestCountingWriterReadFromFallbackCountsOnce(t *testing.T) {
 	}
 	if got, want := underlying.output.String(), "fallback"; got != want {
 		t.Fatalf("underlying output = %q, want %q", got, want)
+	}
+}
+
+func TestCountingWriterPublishesFileBytesBeforeCopyCompletes(t *testing.T) {
+	output, err := os.CreateTemp(t.TempDir(), "output")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer output.Close()
+	state := newLifecycleState()
+	input := &heldOpenReader{nextRead: make(chan struct{}), release: make(chan struct{})}
+	done := make(chan error, 1)
+	go func() {
+		_, err := io.Copy(state.writer(output), input)
+		done <- err
+	}()
+	defer func() {
+		close(input.release)
+		if err := <-done; err != nil {
+			t.Errorf("io.Copy() error = %v", err)
+		}
+	}()
+	select {
+	case <-input.nextRead:
+	case <-time.After(5 * time.Second):
+		t.Fatal("copy did not request more input")
+	}
+	// The next Read begins only after the preceding stdout Write returned,
+	// so this snapshot cannot race with the successful byte-count update.
+	if got, want := state.snapshot("shutdown", "signal").bytes, int64(len("forwarded")); got != want {
+		t.Fatalf("shutdown bytes while copy is open = %d, want %d", got, want)
 	}
 }
 
@@ -452,6 +483,22 @@ func (writer *writeOnlyBuffer) Write(data []byte) (int, error) {
 
 type readerWithoutWriterTo struct {
 	reader io.Reader
+}
+
+type heldOpenReader struct {
+	nextRead chan struct{}
+	release  chan struct{}
+	sent     bool
+}
+
+func (reader *heldOpenReader) Read(data []byte) (int, error) {
+	if !reader.sent {
+		reader.sent = true
+		return copy(data, "forwarded"), nil
+	}
+	close(reader.nextRead)
+	<-reader.release
+	return 0, io.EOF
 }
 
 func (reader readerWithoutWriterTo) Read(data []byte) (int, error) {
