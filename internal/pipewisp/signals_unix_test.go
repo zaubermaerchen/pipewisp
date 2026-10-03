@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -242,6 +243,80 @@ func TestSubprocessSIGHUPPublishesShutdownContext(t *testing.T) {
 	}
 	if !strings.Contains(stderr.String(), "type=event event=shutdown reason=signal") {
 		t.Fatalf("stderr = %q, want verbose signal shutdown event", stderr.String())
+	}
+}
+
+func TestSubprocessSignalShutdownCountsForwardedBytes(t *testing.T) {
+	binary := buildPipewispBinary(t)
+	tests := []struct {
+		name string
+		args []string
+	}{
+		{name: "plain"},
+		{name: "verbose", args: []string{"--verbose"}},
+		{name: "idle", args: []string{"--idle", "1h", "--verbose"}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			marker := filepath.Join(t.TempDir(), "shutdown.marker")
+			shutdown := "printf '%s:%s:%s' \"$PIPEWISP_EVENT\" \"$PIPEWISP_REASON\" \"$PIPEWISP_BYTES\" > " + unixQuote(marker)
+			args := append([]string{"--on-shutdown", shutdown}, test.args...)
+			ctx, cancel := context.WithTimeout(context.Background(), subprocessTimeout)
+			defer cancel()
+			cmd := exec.CommandContext(ctx, binary, args...)
+			stdin, err := cmd.StdinPipe()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer stdin.Close()
+			stdout, err := cmd.StdoutPipe()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer stdout.Close()
+			var stderr bytes.Buffer
+			cmd.Stderr = &stderr
+			if err := cmd.Start(); err != nil {
+				t.Fatal(err)
+			}
+			defer func() {
+				if cmd.ProcessState == nil {
+					_ = cmd.Process.Kill()
+					_ = cmd.Wait()
+				}
+			}()
+			const payload = "forwarded"
+			for range 2 {
+				if _, err := io.WriteString(stdin, payload); err != nil {
+					t.Fatal(err)
+				}
+				output := make([]byte, len(payload))
+				if _, err := io.ReadFull(stdout, output); err != nil {
+					t.Fatalf("ReadFull(stdout) error = %v", err)
+				}
+				if got := string(output); got != payload {
+					t.Fatalf("stdout = %q, want %q", got, payload)
+				}
+			}
+			// Observing the second output establishes that the first Write and
+			// count update finished. The second Write may still be returning when
+			// the signal freezes the context, so either completed-write count is valid.
+			if err := cmd.Process.Signal(syscall.SIGHUP); err != nil {
+				t.Fatal(err)
+			}
+			if status := processExitCode(t, cmd); status != 129 {
+				t.Fatalf("exit code = %d, want 129; stderr = %q", status, stderr.String())
+			}
+			context := readMarker(t, marker)
+			countText, ok := strings.CutPrefix(context, "shutdown:signal:")
+			count, err := strconv.Atoi(countText)
+			if !ok || err != nil || count < len(payload) || count > 2*len(payload) {
+				t.Fatalf("shutdown context = %q, want signal shutdown with %d..%d bytes", context, len(payload), 2*len(payload))
+			}
+			if len(test.args) > 0 && !strings.Contains(stderr.String(), "type=event event=shutdown reason=signal bytes="+countText+" ") {
+				t.Fatalf("stderr = %q, want verbose shutdown bytes=%d", stderr.String(), count)
+			}
+		})
 	}
 }
 
