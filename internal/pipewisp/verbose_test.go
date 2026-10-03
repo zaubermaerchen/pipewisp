@@ -55,6 +55,59 @@ func TestVerboseHookStartErrorShape(t *testing.T) {
 	}
 }
 
+func TestVerboseHookCompletionErrorWithoutProcessStatus(t *testing.T) {
+	boundaryErr := &hookBoundaryStopError{err: errors.New("stop failed")}
+	for _, tc := range []struct {
+		name string
+		err  error
+	}{
+		{"unexpected", errors.New("completion failed")},
+		{"boundary stop", boundaryErr},
+		{"wrapped without process state", &hookProcessError{err: errors.Join(boundaryErr, errors.New("wait failed"))}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var diagnostics bytes.Buffer
+			reporter := newVerboseReporter(&diagnostics, true)
+			reporter.hookEnd("idle", time.Now().Add(-20*time.Millisecond), tc.err)
+			got := diagnostics.String()
+			if !strings.HasPrefix(got, "pipewisp: type=hook event=idle state=error phase=completion duration_ms=") || strings.Count(got, "\n") != 1 {
+				t.Fatalf("diagnostics = %q, want one completion error record", got)
+			}
+			if duration := verboseDurationAfter(t, got, 0); duration < 20 {
+				t.Fatalf("duration_ms = %d, want at least 20", duration)
+			}
+		})
+	}
+}
+
+func TestVerboseHookCompletionErrorPreservesProcessStatus(t *testing.T) {
+	for _, code := range []int{0, 7} {
+		t.Run(strconv.Itoa(code), func(t *testing.T) {
+			execution, err := startHookExecution("exit "+strconv.Itoa(code), hookContext{}, io.Discard, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer execution.close()
+			waitErr := <-execution.waitDone
+			cmd := execution.hook
+			if cmd.ProcessState == nil || !cmd.ProcessState.Exited() || cmd.ProcessState.ExitCode() != code {
+				t.Fatalf("process state = %v; wait error = %v", cmd.ProcessState, waitErr)
+			}
+			var diagnostics bytes.Buffer
+			reporter := newVerboseReporter(&diagnostics, true)
+			err = &hookProcessError{
+				err:   errors.Join(&hookBoundaryStopError{err: errors.New("stop failed")}, waitErr),
+				state: cmd.ProcessState,
+			}
+			reporter.hookEnd("idle", time.Now(), err)
+			want := "pipewisp: type=hook event=idle state=exit exit_code=" + strconv.Itoa(code) + " duration_ms="
+			if got := diagnostics.String(); !strings.HasPrefix(got, want) || strings.Count(got, "\n") != 1 {
+				t.Fatalf("diagnostics = %q, want one record starting with %q", got, want)
+			}
+		})
+	}
+}
+
 func TestCanonicalSignals(t *testing.T) {
 	if got := canonicalSignal(os.Interrupt); got != "SIGINT" {
 		t.Fatalf("canonicalSignal(interrupt) = %q", got)

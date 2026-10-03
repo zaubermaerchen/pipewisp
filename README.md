@@ -428,6 +428,7 @@ pipewisp: type=hook event=idle state=exit exit_code=0 duration_ms=6
 pipewisp: type=hook event=idle state=timeout duration_ms=5003
 pipewisp: type=hook event=idle state=interrupted signal=SIGTERM duration_ms=721
 pipewisp: type=hook event=idle state=error phase=start duration_ms=0
+pipewisp: type=hook event=idle state=error phase=completion duration_ms=6
 pipewisp: type=hook event=idle state=exit signal=SIGTERM duration_ms=6
 ```
 
@@ -435,7 +436,11 @@ pipewisp: type=hook event=idle state=exit signal=SIGTERM duration_ms=6
 that independently exits because of a signal. `timeout` means the configured
 hook deadline was observed. `interrupted` is reserved for a still-running hook
 that pipewisp stopped after accepting a handled signal. `error phase=start`
-means the hook process could not be started. Signal fields use canonical
+means the hook process could not be started. `error phase=completion` means
+completion handling failed without an available process exit status; it does
+not imply a successful exit. A completion error does not replace an available
+process exit status; a separate hook-failure diagnostic reports the error.
+Signal fields use canonical
 uppercase names such as `SIGINT`, `SIGTERM`, and `SIGPIPE`; an unknown numeric
 signal is reported as `signal=unknown signal_number=N`.
 
