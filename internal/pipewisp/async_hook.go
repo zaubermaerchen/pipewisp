@@ -51,11 +51,19 @@ func newAsyncHookManager(diagnostics io.Writer) *asyncHookManager {
 }
 
 func (manager *asyncHookManager) start(name, command string, context hookContext, timeout time.Duration) {
+	manager.mu.Lock()
+	if manager.stopped {
+		manager.mu.Unlock()
+		return
+	}
+	// Shutdown must wait for startup and registration so every launched hook
+	// belongs to its cleanup snapshot.
 	if manager.dryRun {
 		if manager.events != nil {
 			manager.events.emitSideEffect(context.event, command, false, "dry-run")
 		}
 		reportDryRun(manager.diagnostics, name, command)
+		manager.mu.Unlock()
 		return
 	}
 	if manager.reporter != nil {
@@ -81,6 +89,7 @@ func (manager *asyncHookManager) start(name, command string, context hookContext
 			manager.reporter.hookEnd(context.event, started, startErr)
 		}
 		reportDiagnostic(manager.diagnostics, fmt.Errorf("%s hook failed: %w", name, startErr))
+		manager.mu.Unlock()
 		return
 	}
 	hook := &asyncHook{
@@ -93,10 +102,7 @@ func (manager *asyncHookManager) start(name, command string, context hookContext
 		execution:    execution,
 		done:         make(chan struct{}),
 	}
-	manager.mu.Lock()
-	if !manager.stopped {
-		manager.hooks[hook] = struct{}{}
-	}
+	manager.hooks[hook] = struct{}{}
 	manager.mu.Unlock()
 	go manager.wait(hook)
 	if manager.events != nil {

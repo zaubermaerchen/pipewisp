@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -335,6 +336,106 @@ func TestAsyncHookManagerBroadcastsShutdown(t *testing.T) {
 	default:
 		t.Fatal("manager shutdown broadcast is not closed")
 	}
+}
+
+func TestAsyncHookStartAfterShutdownIsNoOp(t *testing.T) {
+	for _, dryRun := range []bool{false, true} {
+		t.Run(map[bool]string{false: "execute", true: "dry-run"}[dryRun], func(t *testing.T) {
+			var diagnostics bytes.Buffer
+			reporter := newVerboseReporter(&diagnostics, true)
+			manager := newAsyncHookManager(reporter)
+			manager.dryRun = dryRun
+			manager.stopAndWait()
+			marker := filepath.Join(t.TempDir(), "started")
+
+			manager.start("on-idle", hookStartMarkerCommand(marker)+"exit 0", hookContext{event: "idle"}, 0)
+
+			reporter.mu.Lock()
+			got := diagnostics.String()
+			reporter.mu.Unlock()
+			if got != "" {
+				t.Errorf("diagnostics = %q, want no output after shutdown", got)
+			}
+			if _, err := os.Stat(marker); !errors.Is(err, os.ErrNotExist) {
+				t.Errorf("marker error = %v, want no process side effect after shutdown", err)
+			}
+			manager.mu.Lock()
+			remaining := len(manager.hooks)
+			manager.mu.Unlock()
+			if remaining != 0 {
+				t.Errorf("manager retained %d hooks after shutdown", remaining)
+			}
+		})
+	}
+}
+
+func TestAsyncHookShutdownWaitsForPendingStart(t *testing.T) {
+	writer := &gatedHookStartWriter{entered: make(chan struct{}), release: make(chan struct{})}
+	manager := newAsyncHookManager(newVerboseReporter(writer, true))
+	started := make(chan struct{})
+	stopped := make(chan struct{})
+	release := sync.OnceFunc(func() { close(writer.release) })
+	stop := sync.OnceFunc(func() {
+		go func() {
+			manager.stopAndWait()
+			close(stopped)
+		}()
+	})
+	waitFor := func(name string, done <-chan struct{}) bool {
+		select {
+		case <-done:
+			return true
+		case <-time.After(5 * time.Second):
+			t.Errorf("timed out waiting for %s", name)
+			return false
+		}
+	}
+	go func() {
+		manager.start("on-idle", hookSleepCommand(time.Second), hookContext{event: "idle"}, 0)
+		close(started)
+	}()
+	defer func() {
+		release()
+		stop()
+		waitFor("hook startup cleanup", started)
+		waitFor("hook shutdown cleanup", stopped)
+	}()
+
+	// Pause before process launch using an existing observable boundary, so
+	// shutdown must account for the invocation even while startup is pending.
+	if !waitFor("hook start diagnostic", writer.entered) {
+		return
+	}
+	stop()
+	select {
+	case <-stopped:
+		t.Fatal("shutdown returned while hook startup was pending")
+	case <-time.After(50 * time.Millisecond):
+	}
+	release()
+	if !waitFor("hook startup", started) || !waitFor("hook shutdown", stopped) {
+		return
+	}
+	manager.mu.Lock()
+	remaining := len(manager.hooks)
+	manager.mu.Unlock()
+	if remaining != 0 {
+		t.Errorf("manager retained %d hooks after shutdown", remaining)
+	}
+}
+
+type gatedHookStartWriter struct {
+	entered chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (writer *gatedHookStartWriter) Write(p []byte) (int, error) {
+	writer.once.Do(func() {
+		close(writer.entered)
+		<-writer.release
+	})
+	return len(p), nil
 }
 
 func TestAsyncHookShutdownWinsReadyTimeout(t *testing.T) {
