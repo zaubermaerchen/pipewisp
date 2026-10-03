@@ -233,6 +233,8 @@ func TestAsyncHookVerboseRecordsStartAndEnd(t *testing.T) {
 		done <- Run([]string{"--verbose", "--idle", "5ms", "--on-idle.async", "true"}, input, &output, diagnosticEvents)
 	}()
 	waitForEvent(t, events, "type=hook event=idle state=start")
+	// Wait for natural completion so EOF cleanup cannot cancel the success case.
+	waitForEvent(t, events, "type=hook event=idle state=exit exit_code=0")
 	input.releaseEOF()
 	select {
 	case status := <-done:
@@ -258,6 +260,33 @@ func TestAsyncHookCompletedRootDoesNotTimeout(t *testing.T) {
 	waitForEvent(t, events, "type=hook event=idle state=exit")
 	if strings.Contains(diagnostics.String(), "state=timeout") {
 		t.Fatalf("diagnostics = %q, completed root unexpectedly timed out", diagnostics.String())
+	}
+}
+
+func TestAsyncHookCompletedRootPreservesExitStatusDuringShutdown(t *testing.T) {
+	var diagnostics bytes.Buffer
+	manager := newAsyncHookManager(newVerboseReporter(&diagnostics, true))
+	close(manager.shutdown)
+	// Exercise both ready select cases with an already reaped successful hook.
+	for i := 0; i < 32; i++ {
+		execution, err := startHookExecution("exit 0", hookContext{event: "idle"}, manager.diagnostics, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		waitErr := <-execution.waitDone
+		if waitErr != nil {
+			execution.close()
+			t.Fatal(waitErr)
+		}
+		execution.waitDone <- waitErr
+		hook := &asyncHook{
+			manager: manager, name: "on-idle", event: "idle",
+			started: time.Now(), execution: execution, done: make(chan struct{}),
+		}
+		manager.wait(hook)
+	}
+	if got := diagnostics.String(); strings.Count(got, "type=hook event=idle state=exit exit_code=0 ") != 32 || strings.Contains(got, "state=error") {
+		t.Fatalf("diagnostics = %q, want successful terminal records for all completed hooks", got)
 	}
 }
 

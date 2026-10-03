@@ -241,7 +241,9 @@ func (manager *asyncHookManager) wait(hook *asyncHook) {
 		descendantTicker.Stop()
 	}
 	if hook.manager.reporter != nil {
-		hook.manager.reporter.hookEnd(hook.event, hook.started, err)
+		// Cleanup can return a bare sentinel after the direct process has exited;
+		// retain its available status so that race does not misreport the outcome.
+		hook.manager.reporter.hookEnd(hook.event, hook.started, wrapHookProcessError(err, hook.execution.hook.ProcessState))
 	}
 	reportAsyncHookBoundaryStopError(hook.manager.diagnostics, hook.name, err)
 	if err != nil && !cancelled {

@@ -118,7 +118,7 @@ func (r *verboseReporter) hookEnd(event string, started time.Time, err error) {
 		return
 	}
 	if err != nil {
-		r.diagnostic("type=hook event=%s state=exit exit_code=0 duration_ms=%d", event, duration)
+		r.diagnostic("type=hook event=%s state=error phase=completion duration_ms=%d", event, duration)
 		return
 	}
 	r.diagnostic("type=hook event=%s state=exit exit_code=0 duration_ms=%d", event, duration)
