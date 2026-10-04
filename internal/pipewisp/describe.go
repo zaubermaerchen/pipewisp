@@ -68,76 +68,12 @@ type sideEffect struct {
 	DryRunSupported bool   `json:"dry_run_supported"`
 }
 
-var descriptionOptionConflicts = []string{
-	"--describe",
-	"--help",
-	"--version",
-	"--name",
-	"--events-fd",
-	"--dry-run",
-	"--verbose",
-	"--on-ready",
-	"--on-first-data",
-	"--on-shutdown",
-	"--idle",
-	"--on-idle",
-	"--on-idle.async",
-	"--on-resume",
-	"--on-resume.async",
-	"--hook-timeout",
-	"--ignore-hook-errors",
-}
-
 func newDescription() description {
 	return description{
 		SchemaVersion: 1,
 		Name:          "pipewisp",
 		Version:       currentVersion(),
-		CLISchema: cliDescription{
-			Options: []cliOptionDescription{
-				{Name: "--describe", Type: "boolean", Conflicts: descriptionOptionConflictsWithout("--describe")},
-				{Name: "--help", Type: "boolean", Aliases: []string{"-h"}, Conflicts: descriptionOptionConflictsWithout("--help")},
-				{Name: "--version", Type: "boolean", Conflicts: descriptionOptionConflictsWithout("--version")},
-				{Name: "--name", Type: "string"},
-				{Name: "--events-fd", Type: "fd"},
-				{Name: "--dry-run", Type: "boolean"},
-				{Name: "--verbose", Type: "boolean"},
-				{Name: "--on-ready", Type: "command"},
-				{Name: "--on-first-data", Type: "command"},
-				{Name: "--on-shutdown", Type: "command"},
-				{
-					Name:        "--idle",
-					Type:        "duration",
-					RequiresAny: []string{"--verbose", "--events-fd", "--on-idle", "--on-idle.async", "--on-resume", "--on-resume.async"},
-				},
-				{
-					Name:      "--on-idle",
-					Type:      "command",
-					Requires:  []string{"--idle"},
-					Conflicts: []string{"--on-idle.async"},
-				},
-				{
-					Name:      "--on-idle.async",
-					Type:      "command",
-					Requires:  []string{"--idle"},
-					Conflicts: []string{"--on-idle"},
-				},
-				{
-					Name:      "--on-resume",
-					Type:      "command",
-					Requires:  []string{"--idle"},
-					Conflicts: []string{"--on-resume.async"},
-				},
-				{
-					Name:      "--on-resume.async",
-					Type:      "command",
-					Requires:  []string{"--idle"},
-					Conflicts: []string{"--on-resume"},
-				},
-				{Name: "--hook-timeout", Type: "duration"},
-				{Name: "--ignore-hook-errors", Type: "boolean"},
-			},
-		},
+		CLISchema:     cliDescription{Options: describeCLIOptions()},
 		StreamSemantics: streamDescription{
 			Stdin: streamInterfaceDescription{
 				Role:        "input",
@@ -182,16 +118,6 @@ func newDescription() description {
 			{Type: "execute-command", Trigger: "resume", Option: "--on-resume.async", Async: true, DryRunSupported: true},
 		},
 	}
-}
-
-func descriptionOptionConflictsWithout(option string) []string {
-	conflicts := make([]string, 0, len(descriptionOptionConflicts)-1)
-	for _, candidate := range descriptionOptionConflicts {
-		if candidate != option {
-			conflicts = append(conflicts, candidate)
-		}
-	}
-	return conflicts
 }
 
 func printDescription(out io.Writer) error {

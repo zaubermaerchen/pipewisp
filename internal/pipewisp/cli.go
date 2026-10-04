@@ -42,6 +42,8 @@ type options struct {
 	onResumeAsyncSet bool
 }
 
+// Keep parsing explicit: option-specific validation and error precedence are public
+// contracts, not a grammar generated from the help/description metadata.
 func parseArgs(args []string) (options, bool, error) {
 	var opts options
 
@@ -343,6 +345,9 @@ func parseArgs(args []string) (options, bool, error) {
 	return opts, false, nil
 }
 
+// Separate names and commands reject any leading dash to avoid consuming flags.
+// Durations and FDs reject only "--", so signed values reach their existing type
+// and domain checks. Equals forms bypass these lexical checks intentionally.
 func parseSeparateValue(args []string, optionIndex int, option string) (string, int, error) {
 	valueIndex := optionIndex + 1
 	if valueIndex >= len(args) || strings.HasPrefix(args[valueIndex], "-") {
@@ -459,5 +464,24 @@ func isBidiControl(r rune) bool {
 }
 
 func printUsage(out io.Writer) {
-	_, _ = out.Write([]byte("Usage: pipewisp [--name NAME] [--events-fd FD] [--dry-run] [--verbose] [--on-ready COMMAND] [--on-first-data COMMAND] [--on-shutdown COMMAND] [--idle DURATION] [--on-idle COMMAND] [--on-idle.async COMMAND] [--on-resume COMMAND] [--on-resume.async COMMAND] [--hook-timeout DURATION] [--ignore-hook-errors]\n       pipewisp --describe\n       pipewisp --version\n       --events-fd requires a writable nonblocking pipe/FIFO/socket on Unix or writable PIPE_NOWAIT pipe on Windows\n"))
+	var usage strings.Builder
+	usage.WriteString("Usage: pipewisp")
+	for _, option := range cliOptions {
+		if !option.help || option.exclusive {
+			continue
+		}
+		usage.WriteString(" [" + option.Name)
+		if option.metavar != "" {
+			usage.WriteString(" " + option.metavar)
+		}
+		usage.WriteByte(']')
+	}
+	usage.WriteByte('\n')
+	for _, option := range cliOptions {
+		if option.help && option.exclusive {
+			usage.WriteString("       pipewisp " + option.Name + "\n")
+		}
+	}
+	usage.WriteString("       --events-fd requires a writable nonblocking pipe/FIFO/socket on Unix or writable PIPE_NOWAIT pipe on Windows\n")
+	_, _ = io.WriteString(out, usage.String())
 }
