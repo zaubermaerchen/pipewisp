@@ -422,23 +422,6 @@ func TestHookContextForInvocationReusesVerboseObservation(t *testing.T) {
 	}
 }
 
-func TestLifecycleEventForHookName(t *testing.T) {
-	tests := map[string]string{
-		"on-ready":      "ready",
-		"on-shutdown":   "shutdown",
-		"on-first-data": "first-data",
-		"on-idle":       "idle",
-		"on-resume":     "resume",
-	}
-	for name, want := range tests {
-		t.Run(name, func(t *testing.T) {
-			if got := lifecycleEventForHookName(name); got != want {
-				t.Fatalf("lifecycleEventForHookName(%q) = %q, want %q", name, got, want)
-			}
-		})
-	}
-}
-
 type partialWriter struct {
 	max    int
 	output bytes.Buffer

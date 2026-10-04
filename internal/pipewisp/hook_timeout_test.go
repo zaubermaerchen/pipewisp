@@ -165,8 +165,8 @@ func TestHookPreservesLargeTrailingStdoutAndStderr(t *testing.T) {
 	const chunkSize = 128 * 1024
 	command := "dd if=/dev/zero bs=" + strconv.Itoa(chunkSize) + " count=1 2>/dev/null; dd if=/dev/zero bs=" + strconv.Itoa(chunkSize) + " count=1 1>&2 2>/dev/null"
 	var diagnostics bytes.Buffer
-	if err := runHook("large-output", command, &diagnostics); err != nil {
-		t.Fatalf("runHook() error = %v; diagnostics length = %d", err, diagnostics.Len())
+	if status := runWithOptions(options{onReady: command, onReadySet: true}, strings.NewReader(""), io.Discard, &diagnostics); status != 0 {
+		t.Fatalf("runWithOptions() status = %d; diagnostics length = %d", status, diagnostics.Len())
 	}
 	if got, want := diagnostics.Len(), 2*chunkSize; got != want {
 		t.Fatalf("diagnostics length = %d, want %d", got, want)
@@ -185,11 +185,11 @@ func TestHookReturnsAfterShellExitWhenDescendantKeepsOutputOpen(t *testing.T) {
 
 	var diagnostics bytes.Buffer
 	started := time.Now()
-	if err := runHook("descendant", "sleep 2 &", &diagnostics); err != nil {
-		t.Fatalf("runHook() error = %v", err)
+	if status := runWithOptions(options{onReady: "sleep 2 &", onReadySet: true}, strings.NewReader(""), io.Discard, &diagnostics); status != 0 {
+		t.Fatalf("runWithOptions() status = %d", status)
 	}
 	if elapsed := time.Since(started); elapsed >= time.Second {
-		t.Fatalf("runHook() took %s, want direct shell completion without descendant drain", elapsed)
+		t.Fatalf("runWithOptions() took %s, want direct shell completion without descendant drain", elapsed)
 	}
 }
 

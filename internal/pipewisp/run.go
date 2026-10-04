@@ -67,12 +67,14 @@ func runWithOptions(opts options, in io.Reader, out io.Writer, diagnostics io.Wr
 	tracker, stopSignals := subscribePassthroughSignals()
 	defer stopSignals()
 
+	hooks := &hookRunner{opts: opts, diagnostics: diagnostics, tracker: tracker, events: state.events}
+
 	var done completion
 	readyContext := state.snapshot("ready", "")
 	reporter.event(readyContext)
 	state.emit(readyContext.event)
 	if opts.onReadySet {
-		if err := runHookWithContextAndTrackerAndSideEffect("on-ready", opts.onReady, readyContext, diagnostics, opts.hookTimeout, tracker, opts.ignoreHookErrors, state.events, opts.dryRun); err != nil {
+		if err := hooks.run("on-ready", opts.onReady, readyContext); err != nil {
 			if sig := tracker.poll(); sig != nil {
 				done = completion{signal: sig}
 			} else {
@@ -88,7 +90,7 @@ func runWithOptions(opts options, in io.Reader, out io.Writer, diagnostics io.Wr
 		// Readiness completed under interruption; skip copying but still proceed to optional cleanup.
 		done = completion{signal: sig}
 	} else if opts.idleSet {
-		done = runIdleCopyWithAsyncManager(opts, in, countedOut, diagnostics, tracker, state, asyncHooks)
+		done = runIdleCopy(opts, in, countedOut, hooks, state, asyncHooks)
 	} else {
 		copyDone := make(chan error, 1)
 		input := in
@@ -101,7 +103,7 @@ func runWithOptions(opts options, in io.Reader, out io.Writer, diagnostics io.Wr
 						return nil
 					}
 					context = hookContextForInvocation(state, "first-data", context, opts.verbose)
-					return runHookWithContextAndTrackerAndSideEffect("on-first-data", opts.onFirstData, context, diagnostics, opts.hookTimeout, tracker, opts.ignoreHookErrors, state.events, opts.dryRun)
+					return hooks.run("on-first-data", opts.onFirstData, context)
 				},
 			}
 			if opts.verbose || state.events != nil {
@@ -155,7 +157,7 @@ func runWithOptions(opts options, in io.Reader, out io.Writer, diagnostics io.Wr
 	var runShutdown func() error
 	if opts.onShutdownSet {
 		runShutdown = func() error {
-			return runHookWithContextAndTrackerAndSideEffect("on-shutdown", opts.onShutdown, shutdownContext, diagnostics, opts.hookTimeout, tracker, opts.ignoreHookErrors, state.events, opts.dryRun)
+			return hooks.run("on-shutdown", opts.onShutdown, shutdownContext)
 		}
 	}
 	return finishCompletionWithTracker(done, runShutdown, diagnostics, tracker)

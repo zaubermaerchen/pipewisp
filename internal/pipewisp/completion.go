@@ -182,7 +182,7 @@ func finishCompletionWithTracker(done completion, runShutdown func() error, diag
 func reportCopyError(diagnostics io.Writer, err error) {
 	var hookErr *firstDataHookError
 	if errors.As(err, &hookErr) {
-		// runHook already reported the hook failure, but a read can return data
+		// The hook runner already reported the hook failure, but a read can return data
 		// and a separate error together; preserve that independent diagnostic.
 		if hookErr.readErr != nil {
 			reportDiagnostic(diagnostics, hookErr.readErr)
