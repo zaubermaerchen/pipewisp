@@ -31,23 +31,18 @@ type hookContext struct {
 	durationMilliseconds int64
 }
 
-func runHook(name, command string, diagnostics io.Writer) error {
-	context := hookContext{event: lifecycleEventForHookName(name)}
-	if err := runHookWithContext(name, command, context, diagnostics); err != nil {
-		return err
-	}
-	return nil
+// hookRunner shares synchronous hook dependencies without owning lifecycle transitions.
+type hookRunner struct {
+	opts        options
+	diagnostics io.Writer
+	tracker     *signalTracker
+	events      *eventEmitter
 }
 
-func runHookWithContext(name, command string, context hookContext, diagnostics io.Writer) error {
-	return runHookWithContextAndTracker(name, command, context, diagnostics, 0, nil, false)
-}
-
-func runHookWithContextAndTracker(name, command string, context hookContext, diagnostics io.Writer, timeout time.Duration, tracker *signalTracker, ignoreErrors bool) error {
-	return runHookWithContextAndTrackerAndSideEffect(name, command, context, diagnostics, timeout, tracker, ignoreErrors, nil, false)
-}
-
-func runHookWithContextAndTrackerAndSideEffect(name, command string, context hookContext, diagnostics io.Writer, timeout time.Duration, tracker *signalTracker, ignoreErrors bool, events *eventEmitter, dryRun bool) error {
+func (runner *hookRunner) run(name, command string, context hookContext) error {
+	diagnostics := runner.diagnostics
+	timeout, ignoreErrors, dryRun := runner.opts.hookTimeout, runner.opts.ignoreHookErrors, runner.opts.dryRun
+	tracker, events := runner.tracker, runner.events
 	reporter := verboseForWriter(diagnostics)
 	if dryRun {
 		if events != nil {
@@ -360,23 +355,6 @@ func wrapHookProcessError(err error, state *os.ProcessState) error {
 		return nil
 	}
 	return &hookProcessError{err: err, state: state}
-}
-
-func lifecycleEventForHookName(name string) string {
-	switch name {
-	case "on-ready":
-		return "ready"
-	case "on-shutdown":
-		return "shutdown"
-	case "on-first-data":
-		return "first-data"
-	case "on-idle":
-		return "idle"
-	case "on-resume":
-		return "resume"
-	default:
-		return name
-	}
 }
 
 func hookEnvironment(context hookContext) []string {

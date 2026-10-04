@@ -119,7 +119,7 @@ func TestVerboseIndependentSignalIsExitSignal(t *testing.T) {
 		t.Skip("POSIX signal command")
 	}
 	var diagnostics bytes.Buffer
-	if err := runHookWithContext("on-ready", "kill -TERM $$", hookContext{event: "ready"}, newVerboseReporter(&diagnostics, true)); err == nil {
+	if status := runWithOptions(options{verbose: true, onReady: "kill -TERM $$", onReadySet: true}, strings.NewReader(""), io.Discard, &diagnostics); status == 0 {
 		t.Fatal("signal hook unexpectedly succeeded")
 	}
 	got := diagnostics.String()
@@ -536,12 +536,31 @@ func TestVerbosePassiveIdleEOFWhileIdleDoesNotResume(t *testing.T) {
 
 func TestVerboseHookSuccessAndFailureRecordsOutcome(t *testing.T) {
 	var diagnostics bytes.Buffer
-	r := newVerboseReporter(&diagnostics, true)
-	if err := runHookWithContext("on-ready", "true", hookContext{event: "ready"}, r); err != nil {
-		t.Fatal(err)
+	if status := runWithOptions(options{verbose: true, onReady: "true", onReadySet: true}, strings.NewReader(""), io.Discard, &diagnostics); status != 0 {
+		t.Fatalf("status = %d", status)
 	}
-	if err := runHookWithContext("on-idle", "false", hookContext{event: "idle"}, r); err == nil {
-		t.Fatal("false hook unexpectedly succeeded")
+	input := &gatedEOFReader{first: []byte("a"), eofReady: make(chan struct{})}
+	released := false
+	defer func() {
+		if !released {
+			input.releaseEOF()
+		}
+	}()
+	events := make(chan string, 16)
+	completed := make(chan int, 1)
+	go func() {
+		completed <- runWithOptions(options{verbose: true, idle: time.Millisecond, idleSet: true, onIdle: "false", onIdleSet: true}, input, io.Discard, io.MultiWriter(&diagnostics, &eventChannelWriter{events: events}))
+	}()
+	waitForEvent(t, events, "type=hook event=idle state=exit exit_code=1")
+	input.releaseEOF()
+	released = true
+	select {
+	case status := <-completed:
+		if status == 0 {
+			t.Fatal("false hook unexpectedly succeeded")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("runWithOptions() did not finish")
 	}
 	got := diagnostics.String()
 	if strings.Count(got, "type=hook event=ready state=start") != 1 || !strings.Contains(got, "type=hook event=ready state=exit exit_code=0") {
@@ -556,7 +575,8 @@ func TestVerboseHookTimeoutUsesObservedDurationAndOrdering(t *testing.T) {
 	var diagnostics bytes.Buffer
 	reporter := newVerboseReporter(&diagnostics, true)
 	timeout := 20 * time.Millisecond
-	err := runHookWithContextAndTracker("on-idle", hookSleepCommand(time.Second), hookContext{event: "idle"}, reporter, timeout, nil, false)
+	hooks := &hookRunner{opts: options{hookTimeout: timeout}, diagnostics: reporter}
+	err := hooks.run("on-idle", hookSleepCommand(time.Second), hookContext{event: "idle"})
 	var timeoutErr *hookTimeoutError
 	if !errors.As(err, &timeoutErr) {
 		t.Fatalf("error = %v, want hookTimeoutError", err)
@@ -579,9 +599,8 @@ func TestVerboseHookTimeoutUsesObservedDurationAndOrdering(t *testing.T) {
 
 func TestVerboseIgnoreHookErrorsDoesNotChangeOutcomeRecord(t *testing.T) {
 	var diagnostics bytes.Buffer
-	reporter := newVerboseReporter(&diagnostics, true)
-	if err := runHookWithContextAndTracker("on-ready", failingHookCommand("failed"), hookContext{event: "ready"}, reporter, 0, nil, true); err != nil {
-		t.Fatalf("ignored hook error = %v", err)
+	if status := runWithOptions(options{verbose: true, onReady: failingHookCommand("failed"), onReadySet: true, ignoreHookErrors: true}, strings.NewReader(""), io.Discard, &diagnostics); status != 0 {
+		t.Fatalf("status = %d", status)
 	}
 	got := diagnostics.String()
 	if !strings.Contains(got, "type=hook event=ready state=exit exit_code=7 duration_ms=") {

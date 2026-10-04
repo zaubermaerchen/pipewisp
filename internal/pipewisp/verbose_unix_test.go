@@ -6,6 +6,7 @@ package pipewisp
 
 import (
 	"bytes"
+	"io"
 	"strings"
 	"syscall"
 	"testing"
@@ -43,8 +44,7 @@ func TestVerboseUnknownInterruptedSignalFieldOrder(t *testing.T) {
 
 func TestVerboseIndependentSIGPIPEIsExitSignal(t *testing.T) {
 	var diagnostics bytes.Buffer
-	reporter := newVerboseReporter(&diagnostics, true)
-	if err := runHookWithContext("on-ready", "kill -PIPE $$", hookContext{event: "ready"}, reporter); err == nil {
+	if status := runWithOptions(options{verbose: true, onReady: "kill -PIPE $$", onReadySet: true}, strings.NewReader(""), io.Discard, &diagnostics); status == 0 {
 		t.Fatal("SIGPIPE hook unexpectedly succeeded")
 	}
 	got := diagnostics.String()
@@ -55,8 +55,7 @@ func TestVerboseIndependentSIGPIPEIsExitSignal(t *testing.T) {
 
 func TestVerboseIndependentSIGKILLIsExitSignal(t *testing.T) {
 	var diagnostics bytes.Buffer
-	reporter := newVerboseReporter(&diagnostics, true)
-	if err := runHookWithContext("on-ready", "kill -KILL $$", hookContext{event: "ready"}, reporter); err == nil {
+	if status := runWithOptions(options{verbose: true, onReady: "kill -KILL $$", onReadySet: true}, strings.NewReader(""), io.Discard, &diagnostics); status == 0 {
 		t.Fatal("SIGKILL hook unexpectedly succeeded")
 	}
 	got := diagnostics.String()

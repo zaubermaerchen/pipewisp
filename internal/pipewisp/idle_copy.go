@@ -161,44 +161,19 @@ type idleCopyRunner struct {
 	state        *lifecycleState
 	stream       *idleObservedStream
 	eventContext hookContext
+	hooks        *hookRunner
 	asyncHooks   *asyncHookManager
 	done         completion
 }
 
-func runIdleCopy(opts options, in io.Reader, out io.Writer, diagnostics io.Writer, tracker *signalTracker) completion {
-	state := newLifecycleState()
-	return runIdleCopyWithState(opts, in, state.writer(out), diagnostics, tracker, state)
-}
-
-func runIdleCopyWithState(opts options, in io.Reader, out io.Writer, diagnostics io.Writer, tracker *signalTracker, state *lifecycleState) completion {
-	asyncHooks := newAsyncHookManager(diagnostics)
-	ownedEvents := false
-	if state.events == nil && opts.eventsFDSet {
-		state.events = newEventEmitter(opts.eventsFD, asyncHooks.diagnostics)
-		ownedEvents = state.events != nil
-	}
-	if ownedEvents {
-		defer state.events.close()
-	}
-	asyncHooks.events = state.events
-	asyncHooks.dryRun = opts.dryRun
-	done := runIdleCopyWithAsyncManager(opts, in, out, diagnostics, tracker, state, asyncHooks)
-	asyncHooks.stopAndWait()
-	return done
-}
-
-func runIdleCopyWithAsyncManager(opts options, in io.Reader, out io.Writer, diagnostics io.Writer, tracker *signalTracker, state *lifecycleState, asyncHooks *asyncHookManager) completion {
-	asyncHooks.events = state.events
-	asyncHooks.dryRun = opts.dryRun
-	if asyncHooks.reporter == nil {
-		diagnostics = asyncHooks.diagnostics
-	}
+func runIdleCopy(opts options, in io.Reader, out io.Writer, hooks *hookRunner, state *lifecycleState, asyncHooks *asyncHookManager) completion {
+	diagnostics, tracker := hooks.diagnostics, hooks.tracker
 	writer := newIdleWritePump(out)
 	defer writer.stopWriting()
 	stream := &idleObservedStream{in: in, writer: writer, tracker: tracker}
 	runner := &idleCopyRunner{
 		opts: opts, diagnostics: diagnostics, tracker: tracker, state: state,
-		stream: stream, asyncHooks: asyncHooks,
+		stream: stream, hooks: hooks, asyncHooks: asyncHooks,
 	}
 	if sig := runner.pollSignal(); sig != nil {
 		runner.abortForSignal(sig)
@@ -295,7 +270,7 @@ func (runner *idleCopyRunner) handleEvent(event khsier.Event) bool {
 				return false
 			}
 			resumeContext = hookContextForInvocation(runner.state, "resume", resumeContext, runner.opts.verbose)
-			if err := runHookWithContextAndTrackerAndSideEffect("on-resume", runner.opts.onResume, resumeContext, runner.diagnostics, runner.opts.hookTimeout, runner.tracker, runner.opts.ignoreHookErrors, runner.state.events, runner.opts.dryRun); err != nil {
+			if err := runner.hooks.run("on-resume", runner.opts.onResume, resumeContext); err != nil {
 				runner.done.resumeErr = err
 			}
 		}
@@ -315,7 +290,7 @@ func (runner *idleCopyRunner) handleFirstData() bool {
 		return false
 	}
 	context := hookContextForInvocation(runner.state, "first-data", runner.eventContext, runner.opts.verbose)
-	if err := runHookWithContextAndTrackerAndSideEffect("on-first-data", runner.opts.onFirstData, context, runner.diagnostics, runner.opts.hookTimeout, runner.tracker, runner.opts.ignoreHookErrors, runner.state.events, runner.opts.dryRun); err != nil {
+	if err := runner.hooks.run("on-first-data", runner.opts.onFirstData, context); err != nil {
 		runner.done.firstDataHookFailed = true
 	}
 	if sig := runner.pollSignal(); sig != nil {
@@ -352,7 +327,7 @@ func (runner *idleCopyRunner) handleIdle() bool {
 			return false
 		}
 		idleContext = hookContextForInvocation(runner.state, "idle", idleContext, runner.opts.verbose)
-		if err := runHookWithContextAndTrackerAndSideEffect("on-idle", runner.opts.onIdle, idleContext, runner.diagnostics, runner.opts.hookTimeout, runner.tracker, runner.opts.ignoreHookErrors, runner.state.events, runner.opts.dryRun); err != nil {
+		if err := runner.hooks.run("on-idle", runner.opts.onIdle, idleContext); err != nil {
 			runner.done.idleErr = err
 		}
 	}

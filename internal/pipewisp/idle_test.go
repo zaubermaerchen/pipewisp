@@ -349,7 +349,11 @@ func TestIdleSignalReturnsWhileStdoutWriteBlocked(t *testing.T) {
 	}
 	completed := make(chan completion, 1)
 	go func() {
-		completed <- runIdleCopy(config, strings.NewReader("a"), writer, io.Discard, tracker)
+		state := newLifecycleState()
+		asyncHooks := newAsyncHookManager(io.Discard)
+		defer asyncHooks.stopAndWait()
+		hooks := &hookRunner{opts: config, diagnostics: asyncHooks.diagnostics, tracker: tracker}
+		completed <- runIdleCopy(config, strings.NewReader("a"), state.writer(writer), hooks, state, asyncHooks)
 	}()
 	select {
 	case <-writer.entered:
@@ -385,9 +389,9 @@ func TestIdleInputReadStartsAndCompletes(t *testing.T) {
 			close(reader.release)
 		}
 	}()
-	done := make(chan completion, 1)
+	done := make(chan int, 1)
 	go func() {
-		done <- runIdleCopy(options{idle: time.Hour}, reader, io.Discard, io.Discard, &signalTracker{})
+		done <- runWithOptions(options{idle: time.Hour, idleSet: true}, reader, io.Discard, io.Discard)
 	}()
 	select {
 	case <-reader.called:
@@ -398,8 +402,8 @@ func TestIdleInputReadStartsAndCompletes(t *testing.T) {
 	released = true
 	select {
 	case result := <-done:
-		if result.copyErr != nil {
-			t.Fatalf("copy error = %v", result.copyErr)
+		if result != 0 {
+			t.Fatalf("status = %d", result)
 		}
 	case <-time.After(time.Second):
 		t.Fatal("input EOF did not complete copy")
@@ -408,9 +412,9 @@ func TestIdleInputReadStartsAndCompletes(t *testing.T) {
 
 func TestIdleCopyReusesReadBuffer(t *testing.T) {
 	reader := &recordingReader{remaining: 2}
-	done := runIdleCopy(options{idle: time.Hour}, reader, io.Discard, io.Discard, &signalTracker{})
-	if done.copyErr != nil {
-		t.Fatalf("copy error = %v", done.copyErr)
+	status := runWithOptions(options{idle: time.Hour, idleSet: true}, reader, io.Discard, io.Discard)
+	if status != 0 {
+		t.Fatalf("status = %d", status)
 	}
 	if len(reader.buffers) != 2 {
 		t.Fatalf("read calls = %d, want 2", len(reader.buffers))
@@ -1053,7 +1057,10 @@ func TestIdleDataAndReadErrorPreservesCompletion(t *testing.T) {
 				config.onFirstData = failingHookCommand("first")
 			}
 			state := newLifecycleState()
-			done := runIdleCopyWithState(config, input, state.writer(&output), &diagnostics, &signalTracker{}, state)
+			asyncHooks := newAsyncHookManager(&diagnostics)
+			defer asyncHooks.stopAndWait()
+			hooks := &hookRunner{opts: config, diagnostics: asyncHooks.diagnostics, tracker: &signalTracker{}}
+			done := runIdleCopy(config, input, state.writer(&output), hooks, state, asyncHooks)
 			if !errors.Is(done.copyErr, wantErr) || completionReason(done) != "io-error" || done.firstDataHookFailed != failHook {
 				t.Fatalf("completion = %#v, reason = %q", done, completionReason(done))
 			}
@@ -1069,7 +1076,10 @@ func TestIdlePartialWriteErrorPreservesCompletionAndBytes(t *testing.T) {
 	output := &partialErrorWriter{max: 2, err: wantErr}
 	state := newLifecycleState()
 	config := options{idle: time.Hour, idleSet: true}
-	done := runIdleCopyWithState(config, strings.NewReader("input"), state.writer(output), io.Discard, &signalTracker{}, state)
+	asyncHooks := newAsyncHookManager(io.Discard)
+	defer asyncHooks.stopAndWait()
+	hooks := &hookRunner{opts: config, diagnostics: asyncHooks.diagnostics, tracker: &signalTracker{}}
+	done := runIdleCopy(config, strings.NewReader("input"), state.writer(output), hooks, state, asyncHooks)
 	if !errors.Is(done.copyErr, wantErr) || completionReason(done) != "io-error" {
 		t.Fatalf("completion = %#v", done)
 	}
@@ -1082,9 +1092,10 @@ func TestIdleFirstDataFailureDoesNotObserveAnotherIdleWindow(t *testing.T) {
 	for i := 0; i < 100; i++ {
 		input := &shortReadReader{chunks: [][]byte{[]byte("first"), []byte("later")}}
 		config := options{idle: time.Nanosecond, idleSet: true, onFirstDataSet: true, onFirstData: failingHookCommand("first"), onIdleSet: true, onIdle: failingHookCommand("idle")}
-		done := runIdleCopy(config, input, io.Discard, io.Discard, &signalTracker{})
-		if !done.firstDataHookFailed || done.idleErr != nil || input.index != 1 {
-			t.Fatalf("iteration %d: completion = %#v, reads = %d", i, done, input.index)
+		var diagnostics bytes.Buffer
+		status := runWithOptions(config, input, io.Discard, &diagnostics)
+		if status != 1 || !strings.Contains(diagnostics.String(), "on-first-data hook failed") || strings.Contains(diagnostics.String(), "on-idle hook failed") || input.index != 1 {
+			t.Fatalf("iteration %d: status = %d, diagnostics = %q, reads = %d", i, status, diagnostics.String(), input.index)
 		}
 	}
 }

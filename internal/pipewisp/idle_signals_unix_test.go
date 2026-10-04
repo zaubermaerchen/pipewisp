@@ -50,7 +50,11 @@ func TestIdleSignalDuringHookSkipsNewResume(t *testing.T) {
 			completed := make(chan completion, 1)
 			var diagnostics bytes.Buffer
 			go func() {
-				completed <- runIdleCopy(config, reader, io.Discard, &diagnostics, tracker)
+				state := newLifecycleState()
+				asyncHooks := newAsyncHookManager(&diagnostics)
+				defer asyncHooks.stopAndWait()
+				hooks := &hookRunner{opts: config, diagnostics: asyncHooks.diagnostics, tracker: tracker}
+				completed <- runIdleCopy(config, reader, state.writer(io.Discard), hooks, state, asyncHooks)
 			}()
 			waitForFile(t, started)
 			signals <- tt.signal
@@ -114,7 +118,11 @@ func TestIdleSignalDuringFirstDataHookWaitsBeforeShutdown(t *testing.T) {
 			completed := make(chan completion, 1)
 			var diagnostics bytes.Buffer
 			go func() {
-				completed <- runIdleCopy(config, reader, io.Discard, &diagnostics, tracker)
+				state := newLifecycleState()
+				asyncHooks := newAsyncHookManager(&diagnostics)
+				defer asyncHooks.stopAndWait()
+				hooks := &hookRunner{opts: config, diagnostics: asyncHooks.diagnostics, tracker: tracker}
+				completed <- runIdleCopy(config, reader, state.writer(io.Discard), hooks, state, asyncHooks)
 			}()
 			waitForFile(t, started)
 			signals <- tt.signal
@@ -129,7 +137,8 @@ func TestIdleSignalDuringFirstDataHookWaitsBeforeShutdown(t *testing.T) {
 				t.Fatalf("runIdleCopy() signal = %v, want %v", doneCompletion.signal, tt.signal)
 			}
 			status := finishCompletion(doneCompletion, func() error {
-				return runHook("on-shutdown", shutdown, &diagnostics)
+				hooks := &hookRunner{diagnostics: &diagnostics}
+				return hooks.run("on-shutdown", shutdown, hookContext{event: "shutdown"})
 			}, &diagnostics)
 			if status != tt.status {
 				t.Fatalf("finishCompletion() status = %d, want %d", status, tt.status)
@@ -176,7 +185,11 @@ func TestIdleSignalDuringResumeHookPreservesPriorData(t *testing.T) {
 			var output, diagnostics bytes.Buffer
 			completed := make(chan completion, 1)
 			go func() {
-				completed <- runIdleCopy(config, input, &output, &diagnostics, tracker)
+				state := newLifecycleState()
+				asyncHooks := newAsyncHookManager(&diagnostics)
+				defer asyncHooks.stopAndWait()
+				hooks := &hookRunner{opts: config, diagnostics: asyncHooks.diagnostics, tracker: tracker}
+				completed <- runIdleCopy(config, input, state.writer(&output), hooks, state, asyncHooks)
 			}()
 
 			waitForFile(t, idleStarted)

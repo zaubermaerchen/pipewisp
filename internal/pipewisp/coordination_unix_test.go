@@ -7,7 +7,6 @@ package pipewisp
 import (
 	"bytes"
 	"errors"
-	"io"
 	"os"
 	"strings"
 	"syscall"
@@ -139,12 +138,9 @@ func TestSignalTrackerKeepsFirstHandledUnixSignal(t *testing.T) {
 }
 
 func TestIdleBrokenPipeIsSuccessfulAndSilent(t *testing.T) {
-	signals := make(chan os.Signal, 1)
-	tracker := &signalTracker{signals: signals}
 	config := options{idle: time.Second, idleSet: true, onIdle: "true", onIdleSet: true}
-	done := runIdleCopy(config, strings.NewReader("input"), errorWriter{err: syscall.EPIPE}, io.Discard, tracker)
 	var diagnostics bytes.Buffer
-	if got := finishCompletion(done, nil, &diagnostics); got != 0 {
+	if got := runWithOptions(config, strings.NewReader("input"), errorWriter{err: syscall.EPIPE}, &diagnostics); got != 0 {
 		t.Fatalf("finishCompletion() status = %d, want 0", got)
 	}
 	if diagnostics.Len() != 0 {
@@ -153,8 +149,6 @@ func TestIdleBrokenPipeIsSuccessfulAndSilent(t *testing.T) {
 }
 
 func TestIdleFirstDataHookFailureWinsBrokenPipe(t *testing.T) {
-	signals := make(chan os.Signal, 1)
-	tracker := &signalTracker{signals: signals}
 	config := options{
 		idle:           time.Hour,
 		idleSet:        true,
@@ -162,8 +156,7 @@ func TestIdleFirstDataHookFailureWinsBrokenPipe(t *testing.T) {
 		onFirstDataSet: true,
 	}
 	var diagnostics bytes.Buffer
-	done := runIdleCopy(config, strings.NewReader("input"), errorWriter{err: syscall.EPIPE}, &diagnostics, tracker)
-	if got := finishCompletion(done, nil, &diagnostics); got != 1 {
+	if got := runWithOptions(config, strings.NewReader("input"), errorWriter{err: syscall.EPIPE}, &diagnostics); got != 1 {
 		t.Fatalf("finishCompletion() status = %d, want 1", got)
 	}
 	if !strings.Contains(diagnostics.String(), "on-first-data hook failed") {
