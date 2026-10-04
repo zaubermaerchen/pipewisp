@@ -92,10 +92,6 @@ func reportDryRun(diagnostics io.Writer, name, command string) {
 	_, _ = fmt.Fprintf(diagnostics, "pipewisp: [DRY RUN] %s: %s\n", name, command)
 }
 
-func executeHook(command string, context hookContext, diagnostics io.Writer) error {
-	return executeHookWithControl(command, context, diagnostics, 0, nil, nil)
-}
-
 type hookTimeoutError struct {
 	duration time.Duration
 }
