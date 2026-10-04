@@ -153,7 +153,8 @@ func TestAsyncHookRetainsBoundaryWithClosedOutput(t *testing.T) {
 		t.Fatalf("WriteFile(%q) error = %v", gate, err)
 	}
 	waitForWindowsHookProcessExit(t, childHandle, "child")
-	// Cmd.Wait completes immediately because the child inherited no pipe FDs.
+	// The child exit alone does not prove cmd.exe has exited. Allow Cmd.Wait
+	// to finish so shutdown exercises a completed root with a live descendant.
 	time.Sleep(hookWaitDelay + 100*time.Millisecond)
 	manager.stopAndWait()
 	waitForWindowsHookProcessExit(t, grandchildHandle, "grandchild")
