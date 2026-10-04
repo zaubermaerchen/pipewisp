@@ -39,6 +39,8 @@ func TestHookTimeoutStopsOrdinaryChildAndGrandchild(t *testing.T) {
 	if !errors.As(err, &timeoutErr) {
 		t.Fatalf("executeHookWithControl() error = %v, want hook timeout", err)
 	}
+	waitForUnixHookProcessExit(t, child)
+	waitForUnixHookProcessExit(t, grandchild)
 	assertHookProcessTreeNotCompleted(t, childCompleted, grandchildCompleted)
 }
 
@@ -70,6 +72,8 @@ func TestHookSignalStopsOrdinaryChildAndGrandchild(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("executeHookWithControl() did not stop after signal")
 	}
+	waitForUnixHookProcessExit(t, child)
+	waitForUnixHookProcessExit(t, grandchild)
 	assertHookProcessTreeNotCompleted(t, childCompleted, grandchildCompleted)
 }
 
@@ -98,6 +102,7 @@ func TestHookTimeoutPreservesExternalRootSIGKILL(t *testing.T) {
 	if !signaled || signal != syscall.SIGKILL {
 		t.Fatalf("hook process state = %v, want SIGKILL", processErr.state)
 	}
+	waitForUnixHookProcessExit(t, child)
 	assertHookProcessTreeNotCompleted(t, completed)
 }
 
@@ -150,7 +155,7 @@ func TestHookSignalStopsDescendantAfterRootNaturalExit(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("executeHookWithControl() did not finish after signal")
 	}
-	time.Sleep(2100 * time.Millisecond)
+	waitForUnixHookProcessExit(t, child)
 	if _, statErr := os.Stat(completed); !os.IsNotExist(statErr) {
 		t.Fatalf("descendant completion marker exists after signal: err = %v", statErr)
 	}
@@ -188,7 +193,8 @@ func TestAsyncHookRetainsBoundaryWithClosedOutput(t *testing.T) {
 	defer manager.stopAndWait()
 	manager.start("on-idle", command, hookContext{event: "idle"}, 0)
 	waitForHookProcessMarker(t, child)
-	// Cmd.Wait completes immediately because the child inherited no pipe FDs.
+	// The child marker alone does not prove the root has exited. Allow Cmd.Wait
+	// to finish so shutdown exercises a completed root with a live descendant.
 	time.Sleep(hookWaitDelay + 100*time.Millisecond)
 	manager.mu.Lock()
 	retained := len(manager.hooks)
@@ -347,6 +353,12 @@ func waitForUnixHookProcessExit(t *testing.T, path string) {
 	if err != nil {
 		t.Fatalf("Atoi(%q) error = %v", string(contents), err)
 	}
+	exited := false
+	defer func() {
+		if !exited {
+			_ = syscall.Kill(pid, syscall.SIGKILL)
+		}
+	}()
 	deadline := time.NewTimer(2 * time.Second)
 	defer deadline.Stop()
 	ticker := time.NewTicker(time.Millisecond)
@@ -354,6 +366,7 @@ func waitForUnixHookProcessExit(t *testing.T, path string) {
 	for {
 		err := syscall.Kill(pid, syscall.Signal(0))
 		if errors.Is(err, syscall.ESRCH) {
+			exited = true
 			return
 		}
 		if err != nil {
@@ -369,7 +382,6 @@ func waitForUnixHookProcessExit(t *testing.T, path string) {
 
 func assertHookProcessTreeNotCompleted(t *testing.T, paths ...string) {
 	t.Helper()
-	time.Sleep(1500 * time.Millisecond)
 	for _, path := range paths {
 		if _, err := os.Stat(path); !os.IsNotExist(err) {
 			t.Fatalf("completion marker %q exists after cancellation: err = %v", path, err)

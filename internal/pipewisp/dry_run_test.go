@@ -366,6 +366,8 @@ func TestHookTimeoutStopsProcessWhileSideEffectCallbackBlocks(t *testing.T) {
 		t.Fatal("side-effect callback was not reached after process start")
 	}
 	waitForHookFile(t, startedPath)
+	// Keep the callback blocked past natural completion so a missing timeout
+	// cannot pass merely because the process has not reached its marker yet.
 	time.Sleep(processDuration + 100*time.Millisecond)
 	if _, err := os.Stat(completedPath); err == nil {
 		t.Fatal("hook process completed while side-effect callback was blocked")

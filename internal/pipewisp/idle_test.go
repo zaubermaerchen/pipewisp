@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -313,6 +314,7 @@ func TestIdleTimerExcludesStdoutWrite(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("stdout write did not start")
 	}
+	// Cover several idle intervals to prove the absence of an idle transition.
 	time.Sleep(25 * time.Millisecond)
 	select {
 	case event := <-events:
@@ -565,7 +567,9 @@ func TestIdleFirstDataAndResumeLifecycleOrder(t *testing.T) {
 }
 
 func TestIdleZeroLengthReadBeforeDataDoesNotStartTimer(t *testing.T) {
-	input := &zeroThenGatedReader{data: []byte("data"), ready: make(chan struct{})}
+	input := &zeroThenGatedReader{data: []byte("data"), ready: make(chan struct{}), secondReadEntered: make(chan struct{})}
+	var release sync.Once
+	defer release.Do(func() { close(input.ready) })
 	var output bytes.Buffer
 	events := make(chan string, 16)
 	diagnostics := &eventChannelWriter{label: "diagnostics", events: events}
@@ -577,13 +581,19 @@ func TestIdleZeroLengthReadBeforeDataDoesNotStartTimer(t *testing.T) {
 	}
 	done := make(chan int, 1)
 	go func() { done <- runWithOptions(config, input, &output, diagnostics) }()
+	select {
+	case <-input.secondReadEntered:
+	case <-time.After(time.Second):
+		t.Fatal("second read did not start after zero-length result")
+	}
+	// Cover several idle intervals to prove the absence of an idle transition.
 	time.Sleep(25 * time.Millisecond)
 	select {
 	case event := <-events:
 		t.Fatalf("idle hook ran before first non-empty read: %q", event)
 	default:
 	}
-	close(input.ready)
+	release.Do(func() { close(input.ready) })
 	select {
 	case status := <-done:
 		if status != 0 {
@@ -665,25 +675,38 @@ func TestIdleOnlyHookRunsWithoutResumeHook(t *testing.T) {
 
 func TestResumeOnlyHookRunsAfterIdle(t *testing.T) {
 	input := &gatedReader{first: []byte("a"), second: []byte("b"), secondReady: make(chan struct{})}
-	var output bytes.Buffer
+	var release sync.Once
+	defer release.Do(input.releaseSecond)
+	var output, diagnosticOutput bytes.Buffer
 	events := make(chan string, 16)
-	diagnostics := &eventChannelWriter{label: "diagnostics", events: events}
+	diagnostics := io.MultiWriter(&diagnosticOutput, &eventChannelWriter{label: "diagnostics", events: events})
 	config := options{
 		idle:        5 * time.Millisecond,
 		idleSet:     true,
+		verbose:     true,
 		onResume:    hookOutputCommand("resume"),
 		onResumeSet: true,
 	}
 	done := make(chan int, 1)
 	go func() { done <- runWithOptions(config, input, &output, diagnostics) }()
-	time.Sleep(25 * time.Millisecond)
-	select {
-	case event := <-events:
-		t.Fatalf("on-idle hook ran in resume-only mode: %q", event)
-	default:
+	deadline := time.NewTimer(time.Second)
+	defer deadline.Stop()
+waitForIdle:
+	for {
+		select {
+		case event := <-events:
+			if strings.Contains(event, "type=hook event=idle") {
+				t.Fatalf("on-idle hook ran in resume-only mode: %q", event)
+			}
+			if strings.Contains(event, "type=event event=idle ") {
+				break waitForIdle
+			}
+		case <-deadline.C:
+			t.Fatal("idle transition did not occur before releasing data")
+		}
 	}
-	input.releaseSecond()
-	waitForEvent(t, events, "resume")
+	release.Do(input.releaseSecond)
+	waitForEvent(t, events, "diagnostics:resume")
 	select {
 	case status := <-done:
 		if status != 0 {
@@ -692,34 +715,59 @@ func TestResumeOnlyHookRunsAfterIdle(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("runWithOptions() did not finish")
 	}
+	if strings.Contains(diagnosticOutput.String(), "type=hook event=idle") {
+		t.Fatalf("on-idle hook ran in resume-only mode: %q", diagnosticOutput.String())
+	}
 }
 
 func TestIdleDataArrivalResetsTimeout(t *testing.T) {
+	const idle = 200 * time.Millisecond
 	input := &threeStageReader{
-		stages: [][]byte{[]byte("a"), []byte("b"), []byte("c")},
-		gates:  []chan struct{}{nil, make(chan struct{}), make(chan struct{})},
+		stages:      [][]byte{[]byte("a"), []byte("b"), []byte("c")},
+		gates:       []chan struct{}{nil, make(chan struct{}), make(chan struct{})},
+		readEntered: []chan struct{}{nil, make(chan struct{}), make(chan struct{})},
 	}
+	var releaseSecond, releaseThird sync.Once
+	defer releaseSecond.Do(func() { close(input.gates[1]) })
+	defer releaseThird.Do(func() { close(input.gates[2]) })
 	var output bytes.Buffer
 	events := make(chan string, 16)
 	diagnostics := &eventChannelWriter{label: "diagnostics", events: events}
 	config := options{
-		idle:      20 * time.Millisecond,
+		idle:      idle,
+		verbose:   true,
 		idleSet:   true,
 		onIdle:    hookOutputCommand("idle"),
 		onIdleSet: true,
 	}
 	done := make(chan int, 1)
 	go func() { done <- runWithOptions(config, input, &output, diagnostics) }()
-	time.Sleep(5 * time.Millisecond)
-	close(input.gates[1])
-	time.Sleep(5 * time.Millisecond)
+	select {
+	case <-input.readEntered[1]:
+	case <-time.After(time.Second):
+		t.Fatal("second read did not start after first chunk")
+	}
+	waitForEvent(t, events, "type=event event=first-data")
+	// Consume half the first idle window before delivering fresh data. The
+	// negative window then crosses its old deadline but not the reset deadline.
+	select {
+	case event := <-events:
+		t.Fatalf("unexpected event before second chunk: %q", event)
+	case <-time.After(idle / 2):
+	}
+	releaseSecond.Do(func() { close(input.gates[1]) })
+	select {
+	case <-input.readEntered[2]:
+	case <-time.After(time.Second):
+		t.Fatal("third read did not start after second chunk")
+	}
 	select {
 	case event := <-events:
 		t.Fatalf("idle hook ran before reset timeout: %q", event)
-	default:
+	case <-time.After(3 * idle / 4):
 	}
 	waitForEvent(t, events, "idle")
-	close(input.gates[2])
+	releaseThird.Do(func() { close(input.gates[2]) })
 	select {
 	case status := <-done:
 		if status != 0 {
@@ -976,9 +1024,10 @@ func (r *dataEOFReader) Read(p []byte) (int, error) {
 }
 
 type zeroThenGatedReader struct {
-	data  []byte
-	ready chan struct{}
-	calls int
+	data              []byte
+	ready             chan struct{}
+	secondReadEntered chan struct{}
+	calls             int
 }
 
 func (r *zeroThenGatedReader) Read(p []byte) (int, error) {
@@ -987,6 +1036,9 @@ func (r *zeroThenGatedReader) Read(p []byte) (int, error) {
 		return 0, nil
 	}
 	if r.calls == 2 {
+		if r.secondReadEntered != nil {
+			close(r.secondReadEntered)
+		}
 		<-r.ready
 		return copy(p, r.data), nil
 	}
@@ -1014,9 +1066,10 @@ func (r *activeZeroThenGatedReader) Read(p []byte) (int, error) {
 }
 
 type threeStageReader struct {
-	stages [][]byte
-	gates  []chan struct{}
-	index  int
+	readEntered []chan struct{}
+	stages      [][]byte
+	gates       []chan struct{}
+	index       int
 }
 
 func (r *threeStageReader) Read(p []byte) (int, error) {
@@ -1025,6 +1078,9 @@ func (r *threeStageReader) Read(p []byte) (int, error) {
 	}
 	index := r.index
 	r.index++
+	if len(r.readEntered) > index && r.readEntered[index] != nil {
+		close(r.readEntered[index])
+	}
 	if gate := r.gates[index]; gate != nil {
 		<-gate
 	}
