@@ -162,18 +162,18 @@ func (manager *asyncHookManager) wait(hook *asyncHook) {
 		}
 		return checkBoundary()
 	}
-	reportRecoveredWaitFailure := func(stoppedWaitErr error, stoppedWaitReceived bool) {
-		if !waitReceived && stoppedWaitReceived {
-			if directFailure := recoveredAsyncHookFailure(hook.name, hook.execution, stoppedWaitErr); directFailure != nil {
+	reportRecoveredWaitFailure := func(result hookStopResult) {
+		if !waitReceived && result.waitReceived {
+			if directFailure := recoveredAsyncHookFailure(hook.name, hook.execution, result.waitErr); directFailure != nil {
 				reportDiagnostic(hook.manager.diagnostics, directFailure)
 				directFailureReported = true
 			}
 		}
 	}
 	stopForShutdown := func() error {
-		cleanupErr, stoppedWaitErr, stoppedWaitReceived := hook.execution.stopAndWait(waitErr, waitReceived)
-		reportRecoveredWaitFailure(stoppedWaitErr, stoppedWaitReceived)
-		return cleanupErr
+		result := hook.execution.stopAndWait(waitErr, waitReceived)
+		reportRecoveredWaitFailure(result)
+		return result.outcomeErr
 	}
 	finished := false
 	for !finished {
@@ -222,19 +222,10 @@ func (manager *asyncHookManager) wait(hook *asyncHook) {
 			case <-hook.manager.shutdown:
 				err = stopForShutdown()
 				cancelled = true
-				finished = true
-				continue
 			default:
-			}
-			select {
-			case <-hook.manager.shutdown:
-				err = stopForShutdown()
-				cancelled = true
-			default:
-				var stoppedWaitErr error
-				var stoppedWaitReceived bool
-				err, stoppedWaitErr, stoppedWaitReceived = stopAsyncHookAndWait(hook.execution, hook.timeout, waitErr, waitReceived)
-				reportRecoveredWaitFailure(stoppedWaitErr, stoppedWaitReceived)
+				result := stopAsyncHookAndWait(hook.execution, hook.timeout, waitErr, waitReceived)
+				err = result.outcomeErr
+				reportRecoveredWaitFailure(result)
 			}
 			finished = true
 		case <-hook.manager.shutdown:
@@ -262,27 +253,28 @@ func (manager *asyncHookManager) wait(hook *asyncHook) {
 	}
 }
 
-func stopAsyncHookAndWait(execution *hookExecution, timeout time.Duration, waitErr error, waitReceived bool) (error, error, bool) {
+func stopAsyncHookAndWait(execution *hookExecution, timeout time.Duration, waitErr error, waitReceived bool) hookStopResult {
 	// Timeout is an invocation outcome only while the boundary still owns a
 	// process. A concurrent natural exit can empty the boundary between the
 	// final check and stop, in which case it is not a timeout.
-	cleanupErr, stoppedWaitErr, stoppedWaitReceived := execution.stopAndWait(waitErr, waitReceived)
-	if errors.Is(cleanupErr, os.ErrProcessDone) {
+	result := execution.stopAndWait(waitErr, waitReceived)
+	if errors.Is(result.outcomeErr, os.ErrProcessDone) {
 		var processErr *hookProcessError
-		if errors.As(cleanupErr, &processErr) {
-			return processErr, stoppedWaitErr, stoppedWaitReceived
+		if errors.As(result.outcomeErr, &processErr) {
+			result.outcomeErr = processErr
+		} else {
+			result.outcomeErr = nil
 		}
-		return nil, stoppedWaitErr, stoppedWaitReceived
+		return result
 	}
 	timeoutErr := &hookTimeoutError{duration: timeout}
-	if cleanupErr == nil {
-		return timeoutErr, stoppedWaitErr, stoppedWaitReceived
-	}
 	var stopErr *hookBoundaryStopError
-	if errors.As(cleanupErr, &stopErr) {
-		return errors.Join(timeoutErr, stopErr), stoppedWaitErr, stoppedWaitReceived
+	if errors.As(result.outcomeErr, &stopErr) {
+		result.outcomeErr = errors.Join(timeoutErr, stopErr)
+	} else {
+		result.outcomeErr = timeoutErr
 	}
-	return timeoutErr, stoppedWaitErr, stoppedWaitReceived
+	return result
 }
 
 func recoveredAsyncHookFailure(name string, execution *hookExecution, waitErr error) error {

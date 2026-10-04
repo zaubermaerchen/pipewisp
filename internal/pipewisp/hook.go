@@ -138,6 +138,12 @@ type hookExecution struct {
 	waitDone chan error
 }
 
+type hookStopResult struct {
+	outcomeErr   error // Stop/cleanup classification, distinct from the direct process result.
+	waitErr      error // Raw Cmd.Wait result, including exec.ErrWaitDelay.
+	waitReceived bool  // A nil waitErr is a successful result only when received.
+}
+
 func startHookExecution(command string, context hookContext, diagnostics io.Writer, beforeStart func()) (*hookExecution, error) {
 	return startHookExecutionWithCallbacks(command, context, diagnostics, beforeStart, nil)
 }
@@ -186,7 +192,7 @@ func (execution *hookExecution) close() {
 // already observed by the async owner is passed through so Cmd.Wait remains a
 // direct-process result, independent of descendant cleanup. It also returns
 // the raw wait result so cancellation can still diagnose a natural exit.
-func (execution *hookExecution) stopAndWait(waitErr error, waitReceived bool) (error, error, bool) {
+func (execution *hookExecution) stopAndWait(waitErr error, waitReceived bool) hookStopResult {
 	if !waitReceived {
 		select {
 		case waitErr = <-execution.waitDone:
@@ -200,16 +206,19 @@ func (execution *hookExecution) stopAndWait(waitErr error, waitReceived bool) (e
 		waitReceived = true
 	}
 	normalizedWaitErr := normalizeHookWaitError(waitErr)
+	result := hookStopResult{waitErr: waitErr, waitReceived: waitReceived}
 	if stopErr != nil && !errors.Is(stopErr, os.ErrProcessDone) {
-		return wrapHookProcessError(errors.Join(&hookBoundaryStopError{err: stopErr}, normalizedWaitErr), execution.hook.ProcessState), waitErr, waitReceived
-	}
-	if errors.Is(stopErr, os.ErrProcessDone) {
+		result.outcomeErr = wrapHookProcessError(errors.Join(&hookBoundaryStopError{err: stopErr}, normalizedWaitErr), execution.hook.ProcessState)
+	} else if errors.Is(stopErr, os.ErrProcessDone) {
 		if normalizedWaitErr == nil {
-			return os.ErrProcessDone, waitErr, waitReceived
+			result.outcomeErr = os.ErrProcessDone
+		} else {
+			result.outcomeErr = errors.Join(os.ErrProcessDone, wrapHookProcessError(normalizedWaitErr, execution.hook.ProcessState))
 		}
-		return errors.Join(os.ErrProcessDone, wrapHookProcessError(normalizedWaitErr, execution.hook.ProcessState)), waitErr, waitReceived
+	} else {
+		result.outcomeErr = wrapHookProcessError(normalizedWaitErr, execution.hook.ProcessState)
 	}
-	return wrapHookProcessError(normalizedWaitErr, execution.hook.ProcessState), waitErr, waitReceived
+	return result
 }
 
 func executeHookWithControl(command string, context hookContext, diagnostics io.Writer, timeout time.Duration, tracker *signalTracker, beforeStart func()) error {
