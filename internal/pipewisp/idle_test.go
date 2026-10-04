@@ -567,7 +567,9 @@ func TestIdleFirstDataAndResumeLifecycleOrder(t *testing.T) {
 }
 
 func TestIdleZeroLengthReadBeforeDataDoesNotStartTimer(t *testing.T) {
-	input := &zeroThenGatedReader{data: []byte("data"), ready: make(chan struct{})}
+	input := &zeroThenGatedReader{data: []byte("data"), ready: make(chan struct{}), secondReadEntered: make(chan struct{})}
+	var release sync.Once
+	defer release.Do(func() { close(input.ready) })
 	var output bytes.Buffer
 	events := make(chan string, 16)
 	diagnostics := &eventChannelWriter{label: "diagnostics", events: events}
@@ -579,6 +581,11 @@ func TestIdleZeroLengthReadBeforeDataDoesNotStartTimer(t *testing.T) {
 	}
 	done := make(chan int, 1)
 	go func() { done <- runWithOptions(config, input, &output, diagnostics) }()
+	select {
+	case <-input.secondReadEntered:
+	case <-time.After(time.Second):
+		t.Fatal("second read did not start after zero-length result")
+	}
 	// Cover several idle intervals to prove the absence of an idle transition.
 	time.Sleep(25 * time.Millisecond)
 	select {
@@ -586,7 +593,7 @@ func TestIdleZeroLengthReadBeforeDataDoesNotStartTimer(t *testing.T) {
 		t.Fatalf("idle hook ran before first non-empty read: %q", event)
 	default:
 	}
-	close(input.ready)
+	release.Do(func() { close(input.ready) })
 	select {
 	case status := <-done:
 		if status != 0 {
@@ -668,26 +675,38 @@ func TestIdleOnlyHookRunsWithoutResumeHook(t *testing.T) {
 
 func TestResumeOnlyHookRunsAfterIdle(t *testing.T) {
 	input := &gatedReader{first: []byte("a"), second: []byte("b"), secondReady: make(chan struct{})}
-	var output bytes.Buffer
+	var release sync.Once
+	defer release.Do(input.releaseSecond)
+	var output, diagnosticOutput bytes.Buffer
 	events := make(chan string, 16)
-	diagnostics := &eventChannelWriter{label: "diagnostics", events: events}
+	diagnostics := io.MultiWriter(&diagnosticOutput, &eventChannelWriter{label: "diagnostics", events: events})
 	config := options{
 		idle:        5 * time.Millisecond,
 		idleSet:     true,
+		verbose:     true,
 		onResume:    hookOutputCommand("resume"),
 		onResumeSet: true,
 	}
 	done := make(chan int, 1)
 	go func() { done <- runWithOptions(config, input, &output, diagnostics) }()
-	// Allow an idle transition without an on-idle hook before releasing data.
-	time.Sleep(25 * time.Millisecond)
-	select {
-	case event := <-events:
-		t.Fatalf("on-idle hook ran in resume-only mode: %q", event)
-	default:
+	deadline := time.NewTimer(time.Second)
+	defer deadline.Stop()
+waitForIdle:
+	for {
+		select {
+		case event := <-events:
+			if strings.Contains(event, "type=hook event=idle") {
+				t.Fatalf("on-idle hook ran in resume-only mode: %q", event)
+			}
+			if strings.Contains(event, "type=event event=idle ") {
+				break waitForIdle
+			}
+		case <-deadline.C:
+			t.Fatal("idle transition did not occur before releasing data")
+		}
 	}
-	input.releaseSecond()
-	waitForEvent(t, events, "resume")
+	release.Do(input.releaseSecond)
+	waitForEvent(t, events, "diagnostics:resume")
 	select {
 	case status := <-done:
 		if status != 0 {
@@ -695,6 +714,9 @@ func TestResumeOnlyHookRunsAfterIdle(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("runWithOptions() did not finish")
+	}
+	if strings.Contains(diagnosticOutput.String(), "type=hook event=idle") {
+		t.Fatalf("on-idle hook ran in resume-only mode: %q", diagnosticOutput.String())
 	}
 }
 
@@ -1002,9 +1024,10 @@ func (r *dataEOFReader) Read(p []byte) (int, error) {
 }
 
 type zeroThenGatedReader struct {
-	data  []byte
-	ready chan struct{}
-	calls int
+	data              []byte
+	ready             chan struct{}
+	secondReadEntered chan struct{}
+	calls             int
 }
 
 func (r *zeroThenGatedReader) Read(p []byte) (int, error) {
@@ -1013,6 +1036,9 @@ func (r *zeroThenGatedReader) Read(p []byte) (int, error) {
 		return 0, nil
 	}
 	if r.calls == 2 {
+		if r.secondReadEntered != nil {
+			close(r.secondReadEntered)
+		}
 		<-r.ready
 		return copy(p, r.data), nil
 	}
