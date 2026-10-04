@@ -10,6 +10,31 @@ permissions:
   contents: read
 
 jobs:
+  # Analysis tooling uses Go 1.26; tests and release builds retain go.mod's Go 1.22 baseline.
+  # Pinned scanners analyze this Ubuntu toolchain, not every supported runtime/platform.
+  # govulncheck uses the live Go vulnerability DB; findings and execution/DB errors fail CI.
+  quality:
+    name: Quality (ubuntu-latest)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+      - name: Set up Go for analysis tools
+        uses: actions/setup-go@v7
+        with:
+          go-version: '1.26'
+      - name: Check formatting
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            printf '%s\n' "$unformatted"
+            exit 1
+          fi
+      - name: Static analysis
+        run: go run honnef.co/go/tools/cmd/staticcheck@v0.7.0 ./...
+      - name: Vulnerability check
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...
+
   test:
     name: Test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
