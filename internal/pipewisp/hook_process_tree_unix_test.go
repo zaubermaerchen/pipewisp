@@ -241,12 +241,15 @@ func TestAsyncHookShutdownReportsNaturalDirectFailureOnce(t *testing.T) {
 	child := filepath.Join(directory, "child.pid")
 	rootExited := filepath.Join(directory, "root.exited")
 	childCommand := "printf '%s' \"$$\" > " + unixQuote(child) + "; sleep 3"
-	command := "sh -c " + unixQuote(childCommand) + " & printf done > " + unixQuote(rootExited) + "; exit 7"
+	command := "sh -c " + unixQuote(childCommand) + " & printf '%s' \"$$\" > " + unixQuote(rootExited) + "; exit 7"
 	var diagnostics bytes.Buffer
 	manager := newAsyncHookManager(&diagnostics)
 	manager.start("on-idle", command, hookContext{event: "idle"}, 0)
 	waitForHookProcessMarker(t, child)
 	waitForHookProcessMarker(t, rootExited)
+	// The marker is written before the root exits; wait for the root so shutdown
+	// cannot race with and kill its natural failure.
+	waitForUnixHookProcessExit(t, rootExited)
 	// The descendant keeps the hook output descriptors open, so Cmd.Wait has
 	// not reported the already-finished non-zero root until cleanup stops it.
 	manager.stopAndWait()
