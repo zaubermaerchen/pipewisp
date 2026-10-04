@@ -240,10 +240,12 @@ func TestAsyncHookShutdownReportsNaturalDirectFailureOnce(t *testing.T) {
 	directory := t.TempDir()
 	child := filepath.Join(directory, "child.pid")
 	rootExited := filepath.Join(directory, "root.exited")
+	rootPIDTemp := rootExited + ".tmp"
 	childCommand := "printf '%s' \"$$\" > " + unixQuote(child) + "; sleep 3"
-	command := "sh -c " + unixQuote(childCommand) + " & printf '%s' \"$$\" > " + unixQuote(rootExited) + "; exit 7"
+	command := "sh -c " + unixQuote(childCommand) + " & printf '%s' \"$$\" > " + unixQuote(rootPIDTemp) + "; mv " + unixQuote(rootPIDTemp) + " " + unixQuote(rootExited) + "; exit 7"
 	var diagnostics bytes.Buffer
 	manager := newAsyncHookManager(&diagnostics)
+	defer manager.stopAndWait()
 	manager.start("on-idle", command, hookContext{event: "idle"}, 0)
 	waitForHookProcessMarker(t, child)
 	waitForHookProcessMarker(t, rootExited)
